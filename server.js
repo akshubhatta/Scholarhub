@@ -1,6 +1,6 @@
 /**
  * ╔══════════════════════════════════════════════════════════╗
- *  ScholarHub — School MIS (Class 6–12)
+ *  Shree Nava Jakriti Secondary School — School MIS (Class 6–12)
  *  Full Stack: Node.js backend + HTML/CSS/JS frontend
  *  NO npm install needed — uses only Node.js built-ins
  *  Data stored permanently in: school_data.json
@@ -23,7 +23,7 @@ const crypto = require('crypto');
 // ── Config ──────────────────────────────────────────────────
 const PORT           = 3000;
 const DATA_FILE = process.env.DATA_PATH || path.join(__dirname, 'school_data.json');
-const SESSION_SECRET = 'scholarhub_secret_key_2024_change_me';
+const SESSION_SECRET = 'Shree Nava Jakriti Secondary School_secret_key_2024_change_me';
 const ADMIN_PASSWORD = 'admin123'; // Change this to your own password!
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -78,7 +78,7 @@ function loadData() {
     grades:     [],
     attendance: [],
     homework:   [],
-    notices:    [{ id: 1, title: 'Welcome to ScholarHub!', cat: 'General', msg: 'Our school management portal is now live. Students can register and access all their records online.', date: new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) }],
+    notices:    [{ id: 1, title: 'Welcome to Shree Nava Jakriti Secondary School!', cat: 'General', msg: 'Our school management portal is now live. Students can register and access all their records online.', date: new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) }],
     timetable:  [],
     ids:        { s: 100, g: 1, a: 1, h: 1, n: 2, t: 1 }
   };
@@ -349,7 +349,7 @@ const HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ScholarHub — School MIS (Class 6–12)</title>
+<title>Shree Nava Jakriti Secondary School — School MIS (Class 6–12)</title>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -620,7 +620,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
       <div class="nav-item" onclick="aPage('timetable',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>Timetable</span></div>
     </nav>
     <div class="sb-user">
-      <div class="sb-user-info"><div class="sb-av av-p">AD</div><div><div class="sb-user-name">Administrator</div><div class="sb-user-sub">admin@scholarhub</div></div></div>
+      <div class="sb-user-info"><div class="sb-av av-p">AD</div><div><div class="sb-user-name">Administrator</div><div class="sb-user-sub">admin@Shree Nava Jakriti Secondary School</div></div></div>
       <button class="btn-logout" onclick="doLogout()">Sign out</button>
     </div>
   </aside>
@@ -1237,7 +1237,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log('\n╔══════════════════════════════════════════════╗');
-  console.log('║   ScholarHub School MIS — Server Running     ║');
+  console.log('║   Shree Nava Jakriti Secondary School School MIS — Server Running     ║');
   console.log('╠══════════════════════════════════════════════╣');
   console.log('║   Open in browser: http://localhost:' + PORT + '      ║');
   console.log('║   Admin login:     admin / admin123          ║');
