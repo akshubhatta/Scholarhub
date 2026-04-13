@@ -1,6 +1,6 @@
 /**
  * ╔══════════════════════════════════════════════════════════╗
- *  Shree Nava Jakriti Secondary School — School MIS (Class 6–12)
+ *  ScholarHub — School MIS (Class 6–12)
  *  Full Stack: Node.js backend + HTML/CSS/JS frontend
  *  NO npm install needed — uses only Node.js built-ins
  *  Data stored permanently in: school_data.json
@@ -19,12 +19,20 @@ const http = require('http');
 const fs   = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { MongoClient } = require('mongodb');
 
 // ── Config ──────────────────────────────────────────────────
-const PORT           = 3000;
-const DATA_FILE = process.env.DATA_PATH || path.join(__dirname, 'school_data.json');
-const SESSION_SECRET = 'Shree Nava Jakriti Secondary School_secret_key_2024_change_me';
-const ADMIN_PASSWORD = 'admin123'; // Change this to your own password!
+const PORT           = process.env.PORT || 3000;
+const MONGO_URL      = process.env.MONGO_URL || 'mongodb+srv://Schooladmin:schooladmin1234@cluster0.evl6bsz.mongodb.net/?appName=Cluster0';
+const SESSION_SECRET = 'scholarhub_secret_key_2024_change_me';
+const ADMIN_PASSWORD = 'admin123';
+const CLOUD_NAME    = process.env.CLOUD_NAME    || 'dkrbs8c9a';
+const CLOUD_API_KEY = process.env.CLOUD_API_KEY || '628819339173869';
+const CLOUD_SECRET  = process.env.CLOUD_SECRET  || 'ljyaX9qUr90TcA-6Skg5svQJ3uU';
+
+// ── MongoDB Client ────────────────────────────────────────────
+const mongoClient = new MongoClient(MONGO_URL);
+let dbCol;
 
 // ── Helpers ──────────────────────────────────────────────────
 function hashPass(p) {
@@ -62,33 +70,98 @@ function json(res, code, data) {
   res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
   res.end(body);
 }
+
+// ── Multipart Parser ─────────────────────────────────────────
+function parseMultipart(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      const buf = Buffer.concat(chunks);
+      const ct  = req.headers['content-type'] || '';
+      const bm  = ct.match(/boundary=(.+)$/);
+      if (!bm) { resolve({ fields: {}, files: {} }); return; }
+      const boundary = '--' + bm[1];
+      const fields = {}, files = {};
+      const parts = buf.toString('binary').split(boundary).slice(1, -1);
+      for (const part of parts) {
+        const idx = part.indexOf('\r\n\r\n');
+        if (idx < 0) continue;
+        const header = part.slice(0, idx);
+        const body   = part.slice(idx + 4, part.lastIndexOf('\r\n'));
+        const nmMatch = header.match(/name="([^"]+)"/);
+        const fnMatch = header.match(/filename="([^"]+)"/);
+        if (!nmMatch) continue;
+        const name = nmMatch[1];
+        if (fnMatch) {
+          const ctMatch = header.match(/Content-Type:\s*(.+)/i);
+          files[name] = { filename: fnMatch[1], mimetype: ctMatch ? ctMatch[1].trim() : 'application/octet-stream', data: Buffer.from(body, 'binary') };
+        } else { fields[name] = body; }
+      }
+      resolve({ fields, files });
+    });
+    req.on('error', reject);
+  });
+}
+
+// ── Cloudinary Upload ────────────────────────────────────────
+function cloudinaryUpload(fileBuffer, mimetype, folder) {
+  return new Promise((resolve, reject) => {
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const paramsToSign = `folder=${folder}&timestamp=${timestamp}`;
+    const signature = crypto.createHash('sha1').update(paramsToSign + CLOUD_SECRET).digest('hex');
+    const boundary = '----FB' + crypto.randomBytes(8).toString('hex');
+    const isRaw = mimetype.includes('pdf');
+    const resType = isRaw ? 'raw' : 'image';
+    const ext = isRaw ? 'pdf' : mimetype.includes('png') ? 'png' : 'jpg';
+    let bodyStr = '';
+    const add = (k, v) => { bodyStr += `--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`; };
+    add('api_key', CLOUD_API_KEY);
+    add('timestamp', timestamp);
+    add('signature', signature);
+    add('folder', folder);
+    bodyStr += `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="upload.${ext}"\r\nContent-Type: ${mimetype}\r\n\r\n`;
+    const bodyBuf = Buffer.concat([Buffer.from(bodyStr, 'binary'), fileBuffer, Buffer.from(`\r\n--${boundary}--\r\n`, 'binary')]);
+    const options = { hostname: 'api.cloudinary.com', path: `/v1_1/${CLOUD_NAME}/${resType}/upload`, method: 'POST', headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': bodyBuf.length } };
+    const req = https.request(options, r => { let d = ''; r.on('data', c => d += c); r.on('end', () => { try { const j = JSON.parse(d); resolve(j.secure_url || j.url || null); } catch { reject(new Error('Cloudinary error')); } }); });
+    req.on('error', reject);
+    req.write(bodyBuf);
+    req.end();
+  });
+}
+
 function authMiddleware(req) {
   const token = getCookie(req, 'sh_token');
   if (!token) return null;
   return verifyToken(token);
 }
 
-// ── Database ─────────────────────────────────────────────────
-function loadData() {
-  if (fs.existsSync(DATA_FILE)) {
-    try { return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); } catch {}
+// ── Database (MongoDB) ───────────────────────────────────────
+async function loadData() {
+  await mongoClient.connect();
+  dbCol = mongoClient.db('scholarhub').collection('data');
+  let doc = await dbCol.findOne({ _id: 'main' });
+  if (!doc) {
+    doc = {
+      _id: 'main',
+      students:   [],
+      grades:     [],
+      attendance: [],
+      homework:   [],
+      notices:    [{ id: 1, title: 'Welcome to ScholarHub!', cat: 'General', msg: 'Our school management portal is now live. Students can register and access all their records online.', date: new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) }],
+      timetable:  [],
+      ids:        { s: 100, g: 1, a: 1, h: 1, n: 2, t: 1 },
+      adminCredentials: { username: 'admin', password: hashPass(ADMIN_PASSWORD) }
+    };
+    await dbCol.insertOne(doc);
   }
-  const init = {
-    students:   [],
-    grades:     [],
-    attendance: [],
-    homework:   [],
-    notices:    [{ id: 1, title: 'Welcome to Shree Nava Jakriti Secondary School!', cat: 'General', msg: 'Our school management portal is now live. Students can register and access all their records online.', date: new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) }],
-    timetable:  [],
-    ids:        { s: 100, g: 1, a: 1, h: 1, n: 2, t: 1 }
-  };
-  saveData(init);
-  return init;
+  return doc;
 }
-function saveData(d) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(d, null, 2), 'utf8');
+async function saveData(d) {
+  const { _id, ...data } = d;
+  await dbCol.replaceOne({ _id: 'main' }, { _id: 'main', ...data }, { upsert: true });
 }
-let DB = loadData();
+let DB = {};
 
 // ── API Router ────────────────────────────────────────────────
 async function handleAPI(req, res) {
@@ -100,8 +173,9 @@ async function handleAPI(req, res) {
   if (url === '/api/login' && method === 'POST') {
     const { username, password, role } = await parseBody(req);
     if (role === 'admin') {
-      if (username === 'admin' && password === ADMIN_PASSWORD) {
-        const token = makeToken({ role: 'admin', username: 'admin' });
+      const ac = DB.adminCredentials || { username: 'admin', password: hashPass(ADMIN_PASSWORD) };
+      if (username === ac.username && hashPass(password) === ac.password) {
+        const token = makeToken({ role: 'admin', username });
         res.writeHead(200, { 'Set-Cookie': `sh_token=${token}; Path=/; HttpOnly; SameSite=Strict`, 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, role: 'admin' }));
       } else { json(res, 401, { ok: false, msg: 'Invalid admin credentials.' }); }
@@ -130,7 +204,7 @@ async function handleAPI(req, res) {
     if (!name || !roll || !cls || !username || !password) return json(res, 400, { ok: false, msg: 'Fill all fields.' });
     if (password.length < 6) return json(res, 400, { ok: false, msg: 'Password must be at least 6 characters.' });
     if (DB.students.find(s => s.username === username)) return json(res, 400, { ok: false, msg: 'Username already taken.' });
-    const st = { id: DB.ids.s++, name, roll, cls, section, username, password: hashPass(password), approved: false, createdAt: new Date().toISOString() };
+    const st = { id: DB.ids.s++, name, roll, cls, section, username, password: hashPass(password), approved: false, photo: '', createdAt: new Date().toISOString() };
     DB.students.push(st);
     saveData(DB);
     json(res, 200, { ok: true, msg: 'Registration successful! Awaiting admin approval.' });
@@ -147,8 +221,61 @@ async function handleAPI(req, res) {
     return;
   }
 
+
+  // POST /api/upload/photo
+  if (url === '/api/upload/photo' && method === 'POST') {
+    if (!user) return json(res, 401, { ok: false });
+    const { files } = await parseMultipart(req);
+    const f = files.photo;
+    if (!f) return json(res, 400, { ok: false, msg: 'No file.' });
+    try {
+      const photoUrl = await cloudinaryUpload(f.data, f.mimetype, 'scholarhub/photos');
+      if (user.role === 'student') {
+        const st = DB.students.find(s => s.id === user.id);
+        if (st) { st.photo = photoUrl; await saveData(DB); }
+      }
+      json(res, 200, { ok: true, url: photoUrl });
+    } catch(e) { json(res, 500, { ok: false, msg: 'Upload failed: ' + e.message }); }
+    return;
+  }
+
+  // POST /api/upload/file
+  if (url === '/api/upload/file' && method === 'POST') {
+    if (!user) return json(res, 401, { ok: false });
+    const { files, fields } = await parseMultipart(req);
+    const f = files.file;
+    if (!f) return json(res, 400, { ok: false, msg: 'No file.' });
+    const folder = fields.folder || 'scholarhub/files';
+    try {
+      const fileUrl = await cloudinaryUpload(f.data, f.mimetype, folder);
+      json(res, 200, { ok: true, url: fileUrl, name: f.filename });
+    } catch(e) { json(res, 500, { ok: false, msg: 'Upload failed: ' + e.message }); }
+    return;
+  }
+
   // ── ADMIN ONLY ROUTES ────────────────────────────────────
   if (!user) return json(res, 401, { ok: false, msg: 'Not authenticated.' });
+
+
+  // POST /api/admin/credentials
+  if (url === '/api/admin/credentials' && method === 'POST') {
+    if (user.role !== 'admin') return json(res, 403, {});
+    const { username, password } = await parseBody(req);
+    if (!username || !password) return json(res, 400, { ok: false, msg: 'Fill all fields.' });
+    if (password.length < 6) return json(res, 400, { ok: false, msg: 'Password min 6 chars.' });
+    DB.adminCredentials = { username, password: hashPass(password) };
+    await saveData(DB);
+    res.writeHead(200, { 'Set-Cookie': 'sh_token=; Path=/; Max-Age=0', 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, msg: 'Updated! Please login again.' }));
+    return;
+  }
+
+  // GET /api/admin/credentials
+  if (url === '/api/admin/credentials' && method === 'GET') {
+    if (user.role !== 'admin') return json(res, 403, {});
+    json(res, 200, { ok: true, username: (DB.adminCredentials || { username: 'admin' }).username });
+    return;
+  }
 
   // GET /api/students
   if (url === '/api/students' && method === 'GET') {
@@ -191,10 +318,10 @@ async function handleAPI(req, res) {
   }
   if (url === '/api/grades' && method === 'POST') {
     if (user.role !== 'admin') return json(res, 403, {});
-    const { sid, sub, exam, max, obt } = await parseBody(req);
+    const { sid, sub, exam, max, obt, fileUrl, fileName } = await parseBody(req);
     if (!sid || !sub || !max || obt === undefined) return json(res, 400, { ok: false, msg: 'Fill all fields.' });
     if (obt > max) return json(res, 400, { ok: false, msg: 'Obtained cannot exceed max marks.' });
-    DB.grades.push({ id: DB.ids.g++, sid: parseInt(sid), sub, exam, max: parseInt(max), obt: parseInt(obt), createdAt: new Date().toISOString() });
+    DB.grades.push({ id: DB.ids.g++, sid: parseInt(sid), sub, exam, max: parseInt(max), obt: parseInt(obt), fileUrl: fileUrl||'', fileName: fileName||'', createdAt: new Date().toISOString() });
     saveData(DB);
     json(res, 200, { ok: true });
     return;
@@ -250,10 +377,27 @@ async function handleAPI(req, res) {
   }
   if (url === '/api/homework' && method === 'POST') {
     if (user.role !== 'admin') return json(res, 403, {});
-    const { title, sub, cls, due, pri, desc } = await parseBody(req);
+    const { title, sub, cls, due, pri, desc, fileUrl, fileName } = await parseBody(req);
     if (!title || !due) return json(res, 400, { ok: false, msg: 'Title and due date required.' });
-    DB.homework.push({ id: DB.ids.h++, title, sub, cls, due, pri, desc, createdAt: new Date().toISOString() });
+    DB.homework.push({ id: DB.ids.h++, title, sub, cls, due, pri, desc, fileUrl: fileUrl||'', fileName: fileName||'', createdAt: new Date().toISOString() });
     saveData(DB);
+    json(res, 200, { ok: true });
+    return;
+  }
+
+
+  // POST /api/homework/:id/submit
+  const submitHWMatch = url.match(/^\/api\/homework\/(\d+)\/submit$/);
+  if (submitHWMatch && method === 'POST') {
+    if (user.role !== 'student') return json(res, 403, {});
+    const { fileUrl, fileName } = await parseBody(req);
+    const hw = DB.homework.find(h => h.id === parseInt(submitHWMatch[1]));
+    if (!hw) return json(res, 404, { ok: false });
+    if (!hw.submissions) hw.submissions = [];
+    const st = DB.students.find(s => s.id === user.id);
+    hw.submissions = hw.submissions.filter(s => s.sid !== user.id);
+    hw.submissions.push({ sid: user.id, name: st ? st.name : 'Unknown', fileUrl, fileName, submittedAt: new Date().toISOString() });
+    await saveData(DB);
     json(res, 200, { ok: true });
     return;
   }
@@ -349,7 +493,7 @@ const HTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Shree Nava Jakriti Secondary School — School MIS (Class 6–12)</title>
+<title>ScholarHub — School MIS (Class 6–12)</title>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -620,7 +764,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
       <div class="nav-item" onclick="aPage('timetable',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>Timetable</span></div>
     </nav>
     <div class="sb-user">
-      <div class="sb-user-info"><div class="sb-av av-p">AD</div><div><div class="sb-user-name">Administrator</div><div class="sb-user-sub">admin@Shree Nava Jakriti Secondary School</div></div></div>
+      <div class="sb-user-info"><div class="sb-av av-p">AD</div><div><div class="sb-user-name">Administrator</div><div class="sb-user-sub">admin@scholarhub</div></div></div>
       <button class="btn-logout" onclick="doLogout()">Sign out</button>
     </div>
   </aside>
@@ -1235,12 +1379,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log('\n╔══════════════════════════════════════════════╗');
-  console.log('║   Shree Nava Jakriti Secondary School School MIS — Server Running     ║');
-  console.log('╠══════════════════════════════════════════════╣');
-  console.log('║   Open in browser: http://localhost:' + PORT + '      ║');
-  console.log('║   Admin login:     admin / admin123          ║');
-  console.log('║   Data saved to:   school_data.json          ║');
-  console.log('╚══════════════════════════════════════════════╝\n');
+loadData().then(data => {
+  DB = data;
+  server.listen(PORT, () => {
+    console.log('\n╔══════════════════════════════════════════════╗');
+    console.log('║   ScholarHub School MIS — Server Running     ║');
+    console.log('╠══════════════════════════════════════════════╣');
+    console.log('║   Port: ' + PORT + '                                  ║');
+    console.log('║   Admin login:     admin / admin123          ║');
+    console.log('║   Data stored in:  MongoDB Atlas             ║');
+    console.log('╚══════════════════════════════════════════════╝\n');
+  });
+}).catch(err => {
+  console.error('Failed to connect to MongoDB:', err);
+  process.exit(1);
 });
