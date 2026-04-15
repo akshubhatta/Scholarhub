@@ -16,7 +16,6 @@
  */
 
 const http = require('http');
-const https = require('https');
 const fs   = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -24,7 +23,7 @@ const { MongoClient } = require('mongodb');
 
 // ── Config ──────────────────────────────────────────────────
 const PORT           = process.env.PORT || 3000;
-const MONGO_URL      = process.env.MONGO_URL || 'mongodb+srv://Schooladmin:schooladmin1234@cluster0.evl6bsz.mongodb.net/scholarhub?appName=Cluster0';
+const MONGO_URL      = process.env.MONGO_URL || 'mongodb+srv://Schooladmin:schooladmin1234@cluster0.evl6bsz.mongodb.net/?appName=Cluster0';
 const SESSION_SECRET = 'scholarhub_secret_key_2024_change_me';
 const ADMIN_PASSWORD = 'admin123';
 const CLOUD_NAME    = process.env.CLOUD_NAME    || 'dkrbs8c9a';
@@ -151,7 +150,9 @@ async function loadData() {
       homework:   [],
       notices:    [{ id: 1, title: 'Welcome to ScholarHub!', cat: 'General', msg: 'Our school management portal is now live. Students can register and access all their records online.', date: new Date().toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) }],
       timetable:  [],
-      ids:        { s: 100, g: 1, a: 1, h: 1, n: 2, t: 1 },
+      ids:        { s: 100, g: 1, a: 1, h: 1, n: 2, t: 1, tc: 1 },
+      teachers: [],
+      assignments: [],
       adminCredentials: { username: 'admin', password: hashPass(ADMIN_PASSWORD) }
     };
     await dbCol.insertOne(doc);
@@ -215,7 +216,13 @@ async function handleAPI(req, res) {
   // GET /api/me
   if (url === '/api/me' && method === 'GET') {
     if (!user) return json(res, 401, { ok: false });
-    if (user.role === 'admin') return json(res, 200, { ok: true, role: 'admin', photo: (DB.adminProfile || {}).photo || '', username: (DB.adminCredentials || {}).username || 'admin' });
+    if (user.role === 'admin') return json(res, 200, { ok: true, role: 'admin' });
+    if (user.role === 'teacher') {
+      if (!DB.teachers) DB.teachers = [];
+      const t = DB.teachers.find(t => t.id === user.id);
+      if (!t) return json(res, 401, { ok: false });
+      return json(res, 200, { ok: true, role: 'teacher', teacher: sanitizeTeacher(t) });
+    }
     const st = DB.students.find(s => s.id === user.id);
     if (!st) return json(res, 401, { ok: false });
     json(res, 200, { ok: true, role: 'student', student: sanitizeStudent(st) });
@@ -234,10 +241,6 @@ async function handleAPI(req, res) {
       if (user.role === 'student') {
         const st = DB.students.find(s => s.id === user.id);
         if (st) { st.photo = photoUrl; await saveData(DB); }
-      } else if (user.role === 'admin') {
-        if (!DB.adminProfile) DB.adminProfile = {};
-        DB.adminProfile.photo = photoUrl;
-        await saveData(DB);
       }
       json(res, 200, { ok: true, url: photoUrl });
     } catch(e) { json(res, 500, { ok: false, msg: 'Upload failed: ' + e.message }); }
@@ -259,6 +262,37 @@ async function handleAPI(req, res) {
   }
 
   // ── ADMIN ONLY ROUTES ────────────────────────────────────
+
+// ── Teacher Routes ───────────────────────────────────────────
+
+  // POST /api/teacher/register
+  if (url === '/api/teacher/register' && method === 'POST') {
+    const { name, subject, username, password } = await parseBody(req);
+    if (!name || !subject || !username || !password) return json(res, 400, { ok: false, msg: 'Fill all fields.' });
+    if (password.length < 6) return json(res, 400, { ok: false, msg: 'Password min 6 chars.' });
+    if (!DB.teachers) DB.teachers = [];
+    if (!DB.ids.tc) DB.ids.tc = 1;
+    if (DB.teachers.find(t => t.username === username)) return json(res, 400, { ok: false, msg: 'Username taken.' });
+    const teacher = { id: DB.ids.tc++, name, subject, username, password: hashPass(password), approved: false, photo: '', createdAt: new Date().toISOString() };
+    DB.teachers.push(teacher);
+    await saveData(DB);
+    json(res, 200, { ok: true, msg: 'Registration successful! Awaiting admin approval.' });
+    return;
+  }
+
+  // POST /api/teacher/login
+  if (url === '/api/teacher/login' && method === 'POST') {
+    if (!DB.teachers) DB.teachers = [];
+    const { username, password } = await parseBody(req);
+    const teacher = DB.teachers.find(t => t.username === username && t.password === hashPass(password));
+    if (!teacher) return json(res, 401, { ok: false, msg: 'Invalid credentials.' });
+    if (!teacher.approved) return json(res, 403, { ok: false, msg: 'Account pending admin approval.' });
+    const token = makeToken({ role: 'teacher', id: teacher.id });
+    res.writeHead(200, { 'Set-Cookie': `sh_token=${token}; Path=/; HttpOnly; SameSite=Strict`, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, role: 'teacher', teacher: sanitizeTeacher(teacher) }));
+    return;
+  }
+
   if (!user) return json(res, 401, { ok: false, msg: 'Not authenticated.' });
 
 
@@ -279,6 +313,48 @@ async function handleAPI(req, res) {
   if (url === '/api/admin/credentials' && method === 'GET') {
     if (user.role !== 'admin') return json(res, 403, {});
     json(res, 200, { ok: true, username: (DB.adminCredentials || { username: 'admin' }).username });
+    return;
+  }
+
+
+  // GET /api/teachers (admin only)
+  if (url === '/api/teachers' && method === 'GET') {
+    if (user.role !== 'admin') return json(res, 403, {});
+    if (!DB.teachers) DB.teachers = [];
+    json(res, 200, { ok: true, teachers: DB.teachers.map(sanitizeTeacher) });
+    return;
+  }
+
+  // POST /api/teachers/:id/approve
+  const approveTeacherMatch = url.match(/^\/api\/teachers\/(\d+)\/approve$/);
+  if (approveTeacherMatch && method === 'POST') {
+    if (user.role !== 'admin') return json(res, 403, {});
+    if (!DB.teachers) DB.teachers = [];
+    const t = DB.teachers.find(t => t.id === parseInt(approveTeacherMatch[1]));
+    if (!t) return json(res, 404, { ok: false });
+    t.approved = true;
+    await saveData(DB);
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  // DELETE /api/teachers/:id
+  const delTeacherMatch = url.match(/^\/api\/teachers\/(\d+)$/);
+  if (delTeacherMatch && method === 'DELETE') {
+    if (user.role !== 'admin') return json(res, 403, {});
+    DB.teachers = (DB.teachers || []).filter(t => t.id !== parseInt(delTeacherMatch[1]));
+    await saveData(DB);
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  // GET /api/teacher/me
+  if (url === '/api/teacher/me' && method === 'GET') {
+    if (user.role !== 'teacher') return json(res, 403, {});
+    if (!DB.teachers) DB.teachers = [];
+    const t = DB.teachers.find(t => t.id === user.id);
+    if (!t) return json(res, 401, { ok: false });
+    json(res, 200, { ok: true, teacher: sanitizeTeacher(t) });
     return;
   }
 
@@ -322,7 +398,7 @@ async function handleAPI(req, res) {
     return;
   }
   if (url === '/api/grades' && method === 'POST') {
-    if (user.role !== 'admin') return json(res, 403, {});
+    if (user.role !== 'admin' && user.role !== 'teacher') return json(res, 403, {});
     const { sid, sub, exam, max, obt, fileUrl, fileName } = await parseBody(req);
     if (!sid || !sub || !max || obt === undefined) return json(res, 400, { ok: false, msg: 'Fill all fields.' });
     if (obt > max) return json(res, 400, { ok: false, msg: 'Obtained cannot exceed max marks.' });
@@ -350,7 +426,7 @@ async function handleAPI(req, res) {
     return;
   }
   if (url === '/api/attendance' && method === 'POST') {
-    if (user.role !== 'admin') return json(res, 403, {});
+    if (user.role !== 'admin' && user.role !== 'teacher') return json(res, 403, {});
     const { sid, sub, tot, pre } = await parseBody(req);
     if (!sid || !sub || !tot || pre === undefined) return json(res, 400, { ok: false, msg: 'Fill all fields.' });
     if (parseInt(pre) > parseInt(tot)) return json(res, 400, { ok: false, msg: 'Present cannot exceed total.' });
@@ -381,7 +457,7 @@ async function handleAPI(req, res) {
     return;
   }
   if (url === '/api/homework' && method === 'POST') {
-    if (user.role !== 'admin') return json(res, 403, {});
+    if (user.role !== 'admin' && user.role !== 'teacher') return json(res, 403, {});
     const { title, sub, cls, due, pri, desc, fileUrl, fileName } = await parseBody(req);
     if (!title || !due) return json(res, 400, { ok: false, msg: 'Title and due date required.' });
     DB.homework.push({ id: DB.ids.h++, title, sub, cls, due, pri, desc, fileUrl: fileUrl||'', fileName: fileName||'', createdAt: new Date().toISOString() });
@@ -410,7 +486,7 @@ async function handleAPI(req, res) {
   // DELETE /api/homework/:id
   const delHWMatch = url.match(/^\/api\/homework\/(\d+)$/);
   if (delHWMatch && method === 'DELETE') {
-    if (user.role !== 'admin') return json(res, 403, {});
+    if (user.role !== 'admin' && user.role !== 'teacher') return json(res, 403, {});
     DB.homework = DB.homework.filter(h => h.id !== parseInt(delHWMatch[1]));
     saveData(DB);
     json(res, 200, { ok: true });
@@ -480,7 +556,7 @@ async function handleAPI(req, res) {
     const classCounts = {};
     ['Class 6','Class 7','Class 8','Class 9','Class 10','Class 11','Class 12'].forEach(c => classCounts[c] = 0);
     approved.forEach(s => classCounts[s.cls] = (classCounts[s.cls] || 0) + 1);
-    json(res, 200, { ok: true, totalStudents: approved.length, pending: pending.length, homework: DB.homework.length, notices: DB.notices.length, classCounts });
+    json(res, 200, { ok: true, totalStudents: approved.length, pending: pending.length, homework: DB.homework.length, notices: DB.notices.length, assignments: (DB.assignments||[]).length, classCounts });
     return;
   }
 
@@ -491,8 +567,13 @@ function sanitizeStudent(s) {
   const { password, ...safe } = s;
   return safe;
 }
+function sanitizeTeacher(t) {
+  const { password, ...safe } = t;
+  return safe;
+}
 
 // ── HTML Frontend ─────────────────────────────────────────────
+
 const HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -513,6 +594,7 @@ const HTML = `<!DOCTYPE html>
   --rose:#f87171;--rose-pale:rgba(248,113,113,.12);
   --sky:#38bdf8;--sky-pale:rgba(56,189,248,.12);
   --violet:#a78bfa;--violet-pale:rgba(167,139,250,.12);
+  --teal:#2dd4bf;--teal-pale:rgba(45,212,191,.12);
   --surface2:#2c3050;--surface3:#353960;
   --sidebar:240px;--r:10px;--r-lg:14px;--r-xl:20px;
   --font:'Plus Jakarta Sans',sans-serif;--mono:'DM Mono',monospace;
@@ -705,12 +787,13 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
       <div class="role-tabs">
         <button class="role-tab active" onclick="switchRole('student',this)">Student</button>
         <button class="role-tab" onclick="switchRole('admin',this)">Admin</button>
+        <button class="role-tab" id="teacher-tab" onclick="switchRole('teacher',this)" style="color:var(--text3);">🎓 Teacher</button>
       </div>
       <div id="l-err" class="alert alert-err"></div>
       <div class="f-group"><label class="f-label">Username</label><input class="f-input" id="l-user" placeholder="Enter username" onkeydown="if(event.key==='Enter')doLogin()"/></div>
       <div class="f-group"><label class="f-label">Password</label><input class="f-input" id="l-pass" type="password" placeholder="Enter password" onkeydown="if(event.key==='Enter')doLogin()"/></div>
       <button class="btn-primary" id="login-btn" onclick="doLogin()">Sign In →</button>
-      <div class="auth-footer">New student? <a onclick="showScreen('screen-register')">Register here</a></div>
+      <div class="auth-footer">Student? <a onclick="showScreen('screen-register')">Register</a> &nbsp;·&nbsp; Teacher? <a onclick="showScreen('screen-teacher-register')" style="color:var(--teal);">Register</a></div>
     </div>
   </div>
 </div>
@@ -750,6 +833,40 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
   </div>
 </div>
 
+
+<!-- TEACHER REGISTER -->
+<div id="screen-teacher-register" class="screen">
+  <div class="auth-bg"><div class="auth-grid"></div><div class="auth-orb orb1"></div><div class="auth-orb orb2"></div></div>
+  <div class="auth-wrap" style="max-width:480px;">
+    <div class="auth-box">
+      <div class="auth-logo">
+        <div class="auth-logo-mark" style="background:linear-gradient(135deg,#0d9488,var(--sky));"><svg viewBox="0 0 24 24"><path d="M12 3L1 9l11 6 9-4.91V17h2V9M5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z"/></svg></div>
+        <div class="auth-logo-text">Scholar<span>Hub</span></div>
+      </div>
+      <div class="auth-head" style="margin-top:8px;">Teacher Registration</div>
+      <div class="auth-sub">Create your teacher portal account</div>
+      <div id="tr-err" class="alert alert-err"></div>
+      <div id="tr-ok" class="alert alert-ok"></div>
+      <div class="f-group"><label class="f-label">Full Name</label><input class="f-input" id="tr-name" placeholder="Your full name"/></div>
+      <div class="f-group"><label class="f-label">Subject Specialty</label>
+        <select class="f-select" id="tr-subject">
+          <option value="">Select Subject</option>
+          <option>Mathematics</option><option>English</option><option>Physics</option>
+          <option>Chemistry</option><option>Biology</option><option>Social Studies</option>
+          <option>Hindi</option><option>Computer Science</option><option>Economics</option>
+          <option>Accounts</option><option>Science</option><option>All Subjects</option>
+        </select>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+        <div class="f-group"><label class="f-label">Username</label><input class="f-input" id="tr-user" placeholder="Choose username"/></div>
+        <div class="f-group"><label class="f-label">Password</label><input class="f-input" id="tr-pass" type="password" placeholder="Min 6 chars"/></div>
+      </div>
+      <button class="btn-primary" id="tr-btn" onclick="doTeacherRegister()" style="background:linear-gradient(135deg,#0d9488,var(--sky));">Register as Teacher →</button>
+      <button class="btn-outline" onclick="showScreen('screen-login')">Back to login</button>
+    </div>
+  </div>
+</div>
+
 <!-- ADMIN -->
 <div id="screen-admin" class="screen">
   <aside class="sidebar">
@@ -761,17 +878,17 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
       <div class="nav-section">Main</div>
       <div class="nav-item active" onclick="aPage('overview',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Overview</span></div>
       <div class="nav-item" onclick="aPage('students',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Students</span><span class="nav-badge" id="nb-pend" style="display:none;">0</span></div>
+      <div class="nav-item" onclick="aPage('teachers',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>Teachers</span><span class="nav-badge" id="nb-tpend" style="display:none;">0</span></div>
       <div class="nav-section">Records</div>
+      <div class="nav-item" onclick="aPage('assignments',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Assignments</span></div>
       <div class="nav-item" onclick="aPage('grades',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span>Marks & Grades</span></div>
       <div class="nav-item" onclick="aPage('attendance',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><polyline points="9 16 11 18 15 14"/></svg><span>Attendance</span></div>
       <div class="nav-item" onclick="aPage('assigns',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/></svg><span>Homework</span></div>
       <div class="nav-item" onclick="aPage('notices',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span>Notice Board</span></div>
       <div class="nav-item" onclick="aPage('timetable',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><span>Timetable</span></div>
-      <div class="nav-section">Account</div>
-      <div class="nav-item" onclick="aPage('settings',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>Settings</span></div>
     </nav>
     <div class="sb-user">
-      <div class="sb-user-info"><div class="sb-av av-p" id="admin-av-sidebar" style="overflow:hidden;background:var(--bg3);">AD</div><div><div class="sb-user-name" id="admin-name-sidebar">Administrator</div><div class="sb-user-sub">admin@scholarhub</div></div></div>
+      <div class="sb-user-info"><div class="sb-av av-p">AD</div><div><div class="sb-user-name">Administrator</div><div class="sb-user-sub">admin@scholarhub</div></div></div>
       <button class="btn-logout" onclick="doLogout()">Sign out</button>
     </div>
   </aside>
@@ -794,6 +911,41 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
       <div class="card"><div class="card-header"><div class="card-title">Pending Approval <span class="pending-pill" id="pend-pill">0</span></div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Roll No</th><th>Class</th><th>Section</th><th>Username</th><th>Action</th></tr></thead><tbody id="pend-tbody"></tbody></table></div></div>
       <div class="card"><div class="card-header"><div class="card-title">Approved Students</div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Roll No</th><th>Class</th><th>Section</th><th>Username</th><th>Joined</th><th>Action</th></tr></thead><tbody id="appr-tbody"></tbody></table></div></div>
     </div>
+
+    <div id="ap-teachers" class="page">
+      <div class="topbar"><div><div class="page-title">Teachers</div><div class="page-sub">Manage teacher accounts</div></div></div>
+      <div class="card"><div class="card-header"><div class="card-title">Pending Approval <span class="pending-pill" id="tpend-pill">0</span></div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Subject</th><th>Username</th><th>Registered</th><th>Action</th></tr></thead><tbody id="tpend-tbody"></tbody></table></div></div>
+      <div class="card"><div class="card-header"><div class="card-title">Approved Teachers</div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Name</th><th>Subject</th><th>Username</th><th>Joined</th><th>Action</th></tr></thead><tbody id="tappr-tbody"></tbody></table></div></div>
+    </div>
+    <div id="ap-assignments" class="page">
+      <div class="topbar"><div><div class="page-title">Assignments</div><div class="page-sub">Post assignments with multiple photos & files</div></div></div>
+      <div class="form-section">
+        <div class="form-section-title">Post New Assignment</div>
+        <div id="asf-ok" class="flash flash-ok">✓ Assignment posted!</div>
+        <div class="f-row f-row-3">
+          <div class="f-grp"><label class="f-lbl">Title</label><input class="fi" id="asf-title" placeholder="Assignment title"/></div>
+          <div class="f-grp"><label class="f-lbl">Subject</label><select class="fs" id="asf-sub"></select></div>
+          <div class="f-grp"><label class="f-lbl">For Class</label><select class="fs" id="asf-class"><option value="All">All Classes</option><option>Class 6</option><option>Class 7</option><option>Class 8</option><option>Class 9</option><option>Class 10</option><option>Class 11</option><option>Class 12</option></select></div>
+        </div>
+        <div class="f-row f-row-2">
+          <div class="f-grp"><label class="f-lbl">Due Date</label><input class="fi" id="asf-due" type="date"/></div>
+          <div class="f-grp"><label class="f-lbl">Priority</label><select class="fs" id="asf-pri"><option>High</option><option selected>Medium</option><option>Low</option></select></div>
+        </div>
+        <div class="f-grp" style="margin-bottom:14px;"><label class="f-lbl">Description</label><textarea class="ft" id="asf-desc" rows="2" placeholder="Describe the assignment..."></textarea></div>
+        <div class="f-grp" style="margin-bottom:14px;">
+          <label class="f-lbl">📎 Upload Photos / PDFs (unlimited files)</label>
+          <label style="display:block;border:2px dashed rgba(255,255,255,.15);border-radius:14px;padding:24px;text-align:center;cursor:pointer;background:var(--bg3);transition:all .2s;" onmouseover="this.style.borderColor='var(--primary2)'" onmouseout="this.style.borderColor='rgba(255,255,255,.15)'">
+            <input type="file" id="asf-files" multiple accept="image/*,.pdf" style="display:none;" onchange="handleFileSelect('asf-files','asf-preview-grid')"/>
+            <div style="font-size:28px;margin-bottom:8px;">📁</div>
+            <div style="color:var(--primary2);font-weight:700;font-size:13px;">Click to choose files</div>
+            <div style="color:var(--text3);font-size:12px;margin-top:4px;">Photos & PDFs · Unlimited files</div>
+          </label>
+          <div id="asf-preview-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;margin-top:12px;"></div>
+        </div>
+        <button class="btn-save" id="asf-btn" onclick="saveAssignment('asf')">Post Assignment</button>
+      </div>
+      <div id="assignments-list-admin"></div>
+    </div>
     <div id="ap-grades" class="page">
       <div class="topbar"><div><div class="page-title">Marks & Grades</div><div class="page-sub">Enter marks per student</div></div></div>
       <div class="form-section">
@@ -810,10 +962,9 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
           <div class="f-grp"><label class="f-lbl">Obtained</label><input class="fi" id="gf-obt" type="number" min="0" placeholder="75" oninput="calcGrade()"/></div>
           <div class="f-grp"><label class="f-lbl">Grade</label><input class="fi" id="gf-grd" readonly/></div>
         </div>
-        <div class="f-grp" style="margin-bottom:14px;"><label class="f-lbl">Attach Marksheet (PDF/Image) <span style="color:var(--text3);font-weight:400;text-transform:none;">— optional</span></label><input class="fi" id="gf-file" type="file" accept=".pdf,image/*" style="padding:7px 13px;cursor:pointer;"/><div id="gf-file-status" style="font-size:11.5px;color:var(--text3);margin-top:4px;"></div></div>
         <button class="btn-save" id="gf-btn" onclick="saveGrade()">Save Grade</button>
       </div>
-      <div class="card"><div class="card-header"><div class="card-title">All Grade Records</div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Student</th><th>Class</th><th>Subject</th><th>Exam</th><th>Max</th><th>Obtained</th><th>%</th><th>Grade</th><th>Marksheet</th><th></th></tr></thead><tbody id="grd-tbody"></tbody></table></div></div>
+      <div class="card"><div class="card-header"><div class="card-title">All Grade Records</div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Student</th><th>Class</th><th>Subject</th><th>Exam</th><th>Max</th><th>Obtained</th><th>%</th><th>Grade</th><th></th></tr></thead><tbody id="grd-tbody"></tbody></table></div></div>
     </div>
     <div id="ap-attendance" class="page">
       <div class="topbar"><div><div class="page-title">Attendance</div><div class="page-sub">Mark attendance per student</div></div></div>
@@ -846,7 +997,6 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
           <div class="f-grp"><label class="f-lbl">Priority</label><select class="fs" id="hf-pri"><option>High</option><option>Medium</option><option>Low</option></select></div>
         </div>
         <div class="f-grp" style="margin-bottom:14px;"><label class="f-lbl">Description</label><textarea class="ft" id="hf-desc" rows="2" placeholder="Describe the task..."></textarea></div>
-        <div class="f-grp" style="margin-bottom:14px;"><label class="f-lbl">Attach File (PDF/Image) <span style="color:var(--text3);font-weight:400;text-transform:none;">— optional</span></label><input class="fi" id="hf-file" type="file" accept=".pdf,image/*" style="padding:7px 13px;cursor:pointer;"/><div id="hf-file-status" style="font-size:11.5px;color:var(--text3);margin-top:4px;"></div></div>
         <button class="btn-save" id="hf-btn" onclick="saveHW()">Post Homework</button>
       </div>
       <div class="card"><div class="card-header"><div class="card-title">All Homework</div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Title</th><th>Subject</th><th>Class</th><th>Due Date</th><th>Priority</th><th></th></tr></thead><tbody id="hw-tbody"></tbody></table></div></div>
@@ -880,32 +1030,122 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
       </div>
       <div class="card"><div class="card-header"><div class="card-title">Timetable Entries</div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Class</th><th>Day</th><th>Period</th><th>Subject</th><th></th></tr></thead><tbody id="tt-tbody"></tbody></table></div></div>
     </div>
-    <div id="ap-settings" class="page">
-      <div class="topbar"><div><div class="page-title">Settings</div><div class="page-sub">Manage your admin account</div></div></div>
-      <div class="g2">
-        <div class="form-section">
-          <div class="form-section-title">Profile Photo</div>
-          <div style="display:flex;align-items:center;gap:18px;margin-bottom:18px;">
-            <div id="admin-photo-preview" style="width:80px;height:80px;border-radius:50%;background:var(--bg3);border:2px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800;color:var(--primary2);overflow:hidden;flex-shrink:0;">AD</div>
-            <div>
-              <div style="font-size:13px;color:var(--text2);margin-bottom:8px;">Upload a profile photo (JPG, PNG)</div>
-              <input type="file" id="admin-photo-input" accept="image/*" style="display:none;" onchange="uploadAdminPhoto()"/>
-              <button class="btn-save" onclick="document.getElementById('admin-photo-input').click()" style="padding:8px 16px;font-size:12px;">Choose Photo</button>
-              <div id="admin-photo-status" style="font-size:11.5px;color:var(--text3);margin-top:6px;"></div>
-            </div>
-          </div>
-        </div>
-        <div class="form-section">
-          <div class="form-section-title">Change Login Credentials</div>
-          <div id="cred-ok" class="flash flash-ok">✓ Credentials updated! Please login again.</div>
-          <div id="cred-err" class="flash flash-err"></div>
-          <div style="margin-bottom:14px;padding:10px 14px;background:var(--bg3);border-radius:9px;border:1px solid var(--border);font-size:12.5px;color:var(--text3);">Current username: <strong id="current-admin-username" style="color:var(--text);font-family:var(--mono);">admin</strong></div>
-          <div class="f-grp" style="margin-bottom:14px;"><label class="f-lbl">New Username</label><input class="fi" id="new-admin-user" placeholder="Enter new username"/></div>
-          <div class="f-grp" style="margin-bottom:14px;"><label class="f-lbl">New Password</label><input class="fi" id="new-admin-pass" type="password" placeholder="Min 6 characters"/></div>
-          <div class="f-grp" style="margin-bottom:18px;"><label class="f-lbl">Confirm Password</label><input class="fi" id="new-admin-pass2" type="password" placeholder="Repeat password"/></div>
-          <button class="btn-save" id="cred-btn" onclick="saveAdminCreds()">Update Credentials</button>
-        </div>
+  </main>
+</div>
+
+
+<!-- TEACHER SCREEN -->
+<div id="screen-teacher" class="screen">
+  <aside class="sidebar" style="border-right-color:rgba(45,212,191,.2);">
+    <div class="sb-brand">
+      <div class="sb-brand-inner"><div class="sb-brand-mark" style="background:linear-gradient(135deg,#0d9488,var(--sky));"><svg viewBox="0 0 24 24"><path d="M12 3L1 9l11 6 9-4.91V17h2V9M5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z"/></svg></div><div class="sb-brand-name">Scholar<span>Hub</span></div></div>
+      <div class="sb-role-pill"><div class="sb-role-dot" style="background:#2dd4bf;"></div><span class="sb-role-text">Teacher</span></div>
+    </div>
+    <nav class="nav">
+      <div class="nav-section">Main</div>
+      <div class="nav-item active" onclick="tPage('dash',this)" style=""><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>Dashboard</span></div>
+      <div class="nav-section">Manage</div>
+      <div class="nav-item" onclick="tPage('assignments',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Assignments</span></div>
+      <div class="nav-item" onclick="tPage('grades',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span>Enter Marks</span></div>
+      <div class="nav-item" onclick="tPage('attendance',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><polyline points="9 16 11 18 15 14"/></svg><span>Attendance</span></div>
+      <div class="nav-item" onclick="tPage('profile',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>My Profile</span></div>
+    </nav>
+    <div class="sb-user">
+      <div class="sb-user-info"><div class="sb-av" style="background:linear-gradient(135deg,#0d9488,var(--sky));color:white;" id="t-av-sidebar">TC</div><div><div class="sb-user-name" id="t-sname">Teacher</div><div class="sb-user-sub" id="t-ssub">Subject</div></div></div>
+      <button class="btn-logout" onclick="doLogout()">Sign out</button>
+    </div>
+  </aside>
+  <main class="main">
+    <div id="tp-dash" class="page active">
+      <div class="topbar"><div><div class="page-title" id="t-greet">Welcome!</div><div class="page-sub" id="t-sub2"></div></div><span class="badge" style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.3);">🎓 Teacher</span></div>
+      <div class="stat-grid">
+        <div class="stat-card sc-p"><div class="stat-icon" style="background:rgba(45,212,191,.12);"><svg viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div><div class="stat-val" id="t-nst" style="color:#2dd4bf;">0</div><div class="stat-label">Total Students</div></div>
+        <div class="stat-card sc-g"><div class="stat-icon si-g"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><div class="stat-val" id="t-nas" style="color:var(--green);">0</div><div class="stat-label">Assignments</div></div>
+        <div class="stat-card sc-p"><div class="stat-icon si-p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div><div class="stat-val" id="t-ngr" style="color:var(--primary2);">0</div><div class="stat-label">Marks Entered</div></div>
+        <div class="stat-card sc-a"><div class="stat-icon si-a"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/></svg></div><div class="stat-val" id="t-nat" style="color:var(--amber);">0</div><div class="stat-label">Attendance Records</div></div>
       </div>
+      <div class="card"><div class="card-header"><div class="card-title">Recent Assignments</div></div><div id="t-recent-assigns"><div class="tbl-empty">No assignments yet</div></div></div>
+    </div>
+    <div id="tp-assignments" class="page">
+      <div class="topbar"><div><div class="page-title">Assignments</div><div class="page-sub">Post with photos & PDFs</div></div></div>
+      <div class="form-section" style="border-color:rgba(45,212,191,.2);">
+        <div class="form-section-title" style="color:#2dd4bf;">Post New Assignment</div>
+        <div id="tasf-ok" class="flash flash-ok">✓ Assignment posted!</div>
+        <div class="f-row f-row-3">
+          <div class="f-grp"><label class="f-lbl">Title</label><input class="fi" id="tasf-title" placeholder="Assignment title"/></div>
+          <div class="f-grp"><label class="f-lbl">Subject</label><select class="fs" id="tasf-sub"></select></div>
+          <div class="f-grp"><label class="f-lbl">For Class</label><select class="fs" id="tasf-class"><option value="All">All Classes</option><option>Class 6</option><option>Class 7</option><option>Class 8</option><option>Class 9</option><option>Class 10</option><option>Class 11</option><option>Class 12</option></select></div>
+        </div>
+        <div class="f-row f-row-2">
+          <div class="f-grp"><label class="f-lbl">Due Date</label><input class="fi" id="tasf-due" type="date"/></div>
+          <div class="f-grp"><label class="f-lbl">Priority</label><select class="fs" id="tasf-pri"><option>High</option><option selected>Medium</option><option>Low</option></select></div>
+        </div>
+        <div class="f-grp" style="margin-bottom:14px;"><label class="f-lbl">Description</label><textarea class="ft" id="tasf-desc" rows="2"></textarea></div>
+        <div class="f-grp" style="margin-bottom:14px;">
+          <label class="f-lbl">📎 Upload Files (up to 10)</label>
+          <label style="display:block;border:2px dashed rgba(45,212,191,.3);border-radius:14px;padding:24px;text-align:center;cursor:pointer;background:var(--bg3);transition:all .2s;">
+            <input type="file" id="tasf-files" multiple accept="image/*,.pdf" style="display:none;" onchange="handleFileSelect('tasf-files','tasf-preview-grid')"/>
+            <div style="font-size:28px;margin-bottom:8px;">📁</div>
+            <div style="color:#2dd4bf;font-weight:700;font-size:13px;">Click to choose files</div>
+            <div style="color:var(--text3);font-size:12px;margin-top:4px;">Photos & PDFs · Unlimited files</div>
+          </label>
+          <div id="tasf-preview-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:8px;margin-top:12px;"></div>
+        </div>
+        <button class="btn-save" id="tasf-btn" onclick="saveAssignment('tasf')" style="background:linear-gradient(135deg,#0d9488,var(--sky));">Post Assignment</button>
+      </div>
+      <div id="t-assignments-list"></div>
+    </div>
+    <div id="tp-grades" class="page">
+      <div class="topbar"><div><div class="page-title">Enter Marks</div><div class="page-sub">Add grades and upload marksheets</div></div></div>
+      <div class="form-section" style="border-color:rgba(45,212,191,.2);">
+        <div class="form-section-title" style="color:#2dd4bf;">Add Mark Record</div>
+        <div id="tgf-ok" class="flash flash-ok">✓ Grade saved!</div>
+        <div id="tgf-err" class="flash flash-err"></div>
+        <div class="f-row f-row-3">
+          <div class="f-grp"><label class="f-lbl">Student</label><select class="fs" id="tgf-st" onchange="updateSubjects('tgf-sub','tgf-st')"><option value="">Select student</option></select></div>
+          <div class="f-grp"><label class="f-lbl">Subject</label><select class="fs" id="tgf-sub"></select></div>
+          <div class="f-grp"><label class="f-lbl">Exam</label><select class="fs" id="tgf-exam"><option>Unit Test</option><option>Half Yearly</option><option>Annual</option><option>Practical</option></select></div>
+        </div>
+        <div class="f-row f-row-3">
+          <div class="f-grp"><label class="f-lbl">Max Marks</label><input class="fi" id="tgf-max" type="number" min="0" placeholder="100" oninput="calcGradeT()"/></div>
+          <div class="f-grp"><label class="f-lbl">Obtained</label><input class="fi" id="tgf-obt" type="number" min="0" placeholder="75" oninput="calcGradeT()"/></div>
+          <div class="f-grp"><label class="f-lbl">Grade</label><input class="fi" id="tgf-grd" readonly/></div>
+        </div>
+        <div class="f-grp" style="margin-bottom:14px;">
+          <label class="f-lbl">Upload Marksheet (optional)</label>
+          <label style="display:block;border:2px dashed rgba(45,212,191,.2);border-radius:10px;padding:14px;text-align:center;cursor:pointer;background:var(--bg3);">
+            <input type="file" id="tgf-file" accept="image/*,.pdf" style="display:none;" onchange="previewSingleFile('tgf-file','tgf-file-preview')"/>
+            <span style="color:#2dd4bf;font-size:12.5px;font-weight:600;">📄 Click to upload marksheet</span>
+          </label>
+          <div id="tgf-file-preview" style="margin-top:6px;font-size:12px;color:var(--text3);"></div>
+        </div>
+        <button class="btn-save" id="tgf-btn" onclick="saveGradeTeacher()" style="background:linear-gradient(135deg,#0d9488,var(--sky));">Save Grade</button>
+      </div>
+      <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Student</th><th>Class</th><th>Subject</th><th>Exam</th><th>Max</th><th>Obtained</th><th>%</th><th>Grade</th><th>File</th></tr></thead><tbody id="tgrd-tbody"></tbody></table></div></div>
+    </div>
+    <div id="tp-attendance" class="page">
+      <div class="topbar"><div><div class="page-title">Attendance</div></div></div>
+      <div class="form-section" style="border-color:rgba(45,212,191,.2);">
+        <div class="form-section-title" style="color:#2dd4bf;">Mark Attendance</div>
+        <div id="taf-ok" class="flash flash-ok">✓ Saved!</div>
+        <div class="f-row f-row-4">
+          <div class="f-grp"><label class="f-lbl">Student</label><select class="fs" id="taf-st" onchange="updateSubjects('taf-sub','taf-st')"><option value="">Select</option></select></div>
+          <div class="f-grp"><label class="f-lbl">Subject</label><select class="fs" id="taf-sub"></select></div>
+          <div class="f-grp"><label class="f-lbl">Total Classes</label><input class="fi" id="taf-tot" type="number" min="0" placeholder="40"/></div>
+          <div class="f-grp"><label class="f-lbl">Present</label><input class="fi" id="taf-pre" type="number" min="0" placeholder="35"/></div>
+        </div>
+        <button class="btn-save" id="taf-btn" onclick="saveAttTeacher()" style="background:linear-gradient(135deg,#0d9488,var(--sky));">Save Attendance</button>
+      </div>
+      <div class="card"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Student</th><th>Class</th><th>Subject</th><th>Total</th><th>Present</th><th>%</th><th>Status</th></tr></thead><tbody id="tatt-tbody"></tbody></table></div></div>
+    </div>
+    <div id="tp-profile" class="page">
+      <div class="topbar"><div><div class="page-title">My Profile</div></div></div>
+      <div style="background:linear-gradient(135deg,#0d7377,#2dd4bf);border-radius:var(--r-xl);padding:32px;margin-bottom:16px;position:relative;overflow:hidden;">
+        <div style="width:80px;height:80px;border-radius:50%;background:rgba(255,255,255,.2);border:3px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800;color:white;margin-bottom:14px;" id="tp-av-text">TC</div>
+        <div style="font-size:20px;font-weight:800;color:white;" id="tp-name">Teacher</div>
+        <div style="font-size:13px;color:rgba(255,255,255,.7);margin-top:3px;" id="tp-subject">Subject</div>
+      </div>
+      <div class="card"><table class="tbl"><tr><td style="color:var(--text3);width:40%;">Username</td><td id="tp-user" style="font-family:var(--mono);font-weight:600;"></td></tr><tr><td style="color:var(--text3);">Role</td><td><span style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.3);border-radius:20px;padding:3px 10px;font-size:10.5px;font-weight:700;">🎓 Teacher</span></td></tr><tr><td style="color:var(--text3);">Status</td><td><span class="badge b-green">Active</span></td></tr></table></div>
     </div>
   </main>
 </div>
@@ -921,6 +1161,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
       <div class="nav-section">Main</div>
       <div class="nav-item active" onclick="sPage('dash',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span>My Dashboard</span></div>
       <div class="nav-section">Academics</div>
+      <div class="nav-item" onclick="sPage('assignments',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Assignments</span></div>
       <div class="nav-item" onclick="sPage('grades',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span>My Marks</span></div>
       <div class="nav-item" onclick="sPage('att',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><polyline points="9 16 11 18 15 14"/></svg><span>Attendance</span></div>
       <div class="nav-item" onclick="sPage('hw',this)"><svg class="nav-item-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>Homework</span></div>
@@ -951,27 +1192,19 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
         <div class="card"><div class="card-header"><div class="card-title">Latest Notices</div></div><div id="d-not"><div class="tbl-empty">No notices yet</div></div></div>
       </div>
     </div>
-    <div id="sp-grades" class="page"><div class="topbar"><div><div class="page-title">My Marks</div><div class="page-sub">Your academic performance</div></div></div><div class="card"><div class="card-header"><div class="card-title">All Marks</div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Subject</th><th>Exam</th><th>Max</th><th>Obtained</th><th>%</th><th>Grade</th><th>Status</th><th>Marksheet</th></tr></thead><tbody id="sg-tbody"></tbody></table></div></div></div>
+
+    <div id="sp-assignments" class="page">
+      <div class="topbar"><div><div class="page-title">Assignments</div><div class="page-sub">View and submit your work</div></div></div>
+      <div id="s-assignments-list"></div>
+    </div>
+    <div id="sp-grades" class="page"><div class="topbar"><div><div class="page-title">My Marks</div><div class="page-sub">Your academic performance</div></div></div><div class="card"><div class="card-header"><div class="card-title">All Marks</div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Subject</th><th>Exam</th><th>Max</th><th>Obtained</th><th>%</th><th>Grade</th><th>Status</th></tr></thead><tbody id="sg-tbody"></tbody></table></div></div></div>
     <div id="sp-att" class="page"><div class="topbar"><div><div class="page-title">Attendance</div><div class="page-sub">Your class presence</div></div></div><div class="card"><div class="card-header"><div class="card-title">Attendance Summary</div></div><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Subject</th><th>Total</th><th>Present</th><th>Absent</th><th>%</th><th>Status</th></tr></thead><tbody id="sa-tbody"></tbody></table></div></div></div>
     <div id="sp-hw" class="page"><div class="topbar"><div><div class="page-title">Homework</div><div class="page-sub">Your assignments</div></div></div><div id="s-hwlist"></div></div>
     <div id="sp-tt" class="page"><div class="topbar"><div><div class="page-title">My Timetable</div><div class="page-sub">Your class schedule</div></div></div><div id="s-ttlist"></div></div>
     <div id="sp-notices" class="page"><div class="topbar"><div><div class="page-title">Notice Board</div><div class="page-sub">School announcements</div></div></div><div id="s-notlist"></div></div>
     <div id="sp-profile" class="page">
       <div class="topbar"><div><div class="page-title">My Profile</div><div class="page-sub">Your account details</div></div></div>
-      <div class="profile-hero">
-        <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;">
-          <div style="position:relative;">
-            <div id="p-av" style="width:80px;height:80px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800;background:rgba(255,255,255,.2);border:3px solid rgba(255,255,255,.3);color:white;overflow:hidden;cursor:pointer;" onclick="document.getElementById('student-photo-input').click()">ST</div>
-            <div style="position:absolute;bottom:0;right:0;width:24px;height:24px;background:var(--primary);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;border:2px solid var(--bg2);" onclick="document.getElementById('student-photo-input').click()"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div>
-            <input type="file" id="student-photo-input" accept="image/*" style="display:none;" onchange="uploadStudentPhoto()"/>
-          </div>
-          <div>
-            <div class="profile-name" id="p-name">Student Name</div>
-            <div class="profile-sub" id="p-class-sec">Class —</div>
-            <div id="student-photo-status" style="font-size:11.5px;color:rgba(255,255,255,.6);margin-top:4px;"></div>
-          </div>
-        </div>
-      </div>
+      <div class="profile-hero"><div class="profile-av-lg" id="p-av">ST</div><div class="profile-name" id="p-name">Student Name</div><div class="profile-sub" id="p-class-sec">Class —</div></div>
       <div class="g2">
         <div class="card"><div class="card-header"><div class="card-title">Academic Info</div></div><table class="tbl"><tr><td style="color:var(--text3);width:40%;">Roll Number</td><td id="p-roll" style="font-family:var(--mono);font-weight:600;"></td></tr><tr><td style="color:var(--text3);">Class</td><td id="p-cls"></td></tr><tr><td style="color:var(--text3);">Section</td><td id="p-sec"></td></tr></table></div>
         <div class="card"><div class="card-header"><div class="card-title">Account Info</div></div><table class="tbl"><tr><td style="color:var(--text3);width:40%;">Username</td><td id="p-user" style="font-family:var(--mono);font-weight:600;"></td></tr><tr><td style="color:var(--text3);">Status</td><td><span class="badge b-green">Active</span></td></tr></table></div>
@@ -1053,7 +1286,7 @@ async function doLogin() {
   const r = await POST('/api/login', { username, password, role: curRole });
   setLoading('login-btn', false);
   if (!r.ok) { showAlert('l-err', r.msg || 'Login failed.'); return; }
-  if (r.role === 'admin') { showScreen('screen-admin'); setAdminSidebarPhoto(r.photo, r.username); loadAdminOverview(); }
+  if (r.role === 'admin') { showScreen('screen-admin'); loadAdminOverview(); }
   else { curStudent = r.student; showScreen('screen-student'); loadStudentDash(); }
 }
 
@@ -1087,18 +1320,8 @@ async function doLogout() {
 async function checkSession() {
   const r = await GET('/api/me');
   if (!r.ok) return;
-  if (r.role === 'admin') { showScreen('screen-admin'); setAdminSidebarPhoto(r.photo, r.username); loadAdminOverview(); }
+  if (r.role === 'admin') { showScreen('screen-admin'); loadAdminOverview(); }
   else { curStudent = r.student; showScreen('screen-student'); loadStudentDash(); }
-}
-
-function setAdminSidebarPhoto(photoUrl, username) {
-  const av = document.getElementById('admin-av-sidebar');
-  if (av) {
-    if (photoUrl) { av.innerHTML = \`<img src="\${photoUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" />\`; }
-    else { av.textContent = (username||'AD').slice(0,2).toUpperCase(); }
-  }
-  const nm = document.getElementById('admin-name-sidebar');
-  if (nm && username) nm.textContent = username;
 }
 
 // ── Admin Navigation ───────────────────────────────────────
@@ -1108,11 +1331,11 @@ function aPage(name, el) {
   document.getElementById('ap-' + name).classList.add('active');
   el.classList.add('active');
   ({ overview: loadAdminOverview, students: loadStudentsPage, grades: loadGradesPage,
-     attendance: loadAttPage, assigns: loadHWPage, notices: loadNoticesPage, timetable: loadTTPage, settings: loadSettingsPage })[name]?.();
+     attendance: loadAttPage, assigns: loadHWPage, notices: loadNoticesPage, timetable: loadTTPage })[name]?.();
 }
 
 async function loadAdminOverview() {
-  const [statsR, studentsR] = await Promise.all([GET('/api/stats'), GET('/api/students')]);
+  const [statsR, studentsR, teachersR] = await Promise.all([GET('/api/stats'), GET('/api/students'), GET('/api/teachers')]);
   allStudents = studentsR.students || [];
   if (statsR.ok) {
     setText('ov-st', statsR.totalStudents);
@@ -1179,9 +1402,8 @@ async function refreshGradeTable() {
     const st = allStudents.find(s => s.id === g.sid);
     const pct = Math.round(g.obt / g.max * 100);
     const col = gradeColor(pct);
-    const fileCell = g.fileUrl ? \`<a href="\${g.fileUrl}" target="_blank" style="color:var(--sky);font-size:11.5px;font-weight:600;">📎 View</a>\` : '—';
-    return \`<tr><td><strong>\${st?st.name:'Unknown'}</strong></td><td><span class="badge b-primary">\${st?st.cls:'—'}</span></td><td>\${g.sub}</td><td>\${g.exam}</td><td>\${g.max}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${g.obt}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${pct}%</td><td><span class="badge" style="background:\${col}1a;color:\${col};">\${gradeLabel(pct)}</span></td><td>\${fileCell}</td><td><button class="btn-del" onclick="delGrade(\${g.id})">Del</button></td></tr>\`;
-  }).join('') || '<tr><td colspan="10" class="tbl-empty">No grade records yet</td></tr>';
+    return \`<tr><td><strong>\${st?st.name:'Unknown'}</strong></td><td><span class="badge b-primary">\${st?st.cls:'—'}</span></td><td>\${g.sub}</td><td>\${g.exam}</td><td>\${g.max}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${g.obt}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${pct}%</td><td><span class="badge" style="background:\${col}1a;color:\${col};">\${gradeLabel(pct)}</span></td><td><button class="btn-del" onclick="delGrade(\${g.id})">Del</button></td></tr>\`;
+  }).join('') || '<tr><td colspan="9" class="tbl-empty">No grade records yet</td></tr>';
 }
 async function saveGrade() {
   saveLabel('gf-btn'); setLoading('gf-btn', true);
@@ -1191,31 +1413,13 @@ async function saveGrade() {
   const exam = document.getElementById('gf-exam').value;
   const max  = document.getElementById('gf-max').value;
   const obt  = document.getElementById('gf-obt').value;
-  let fileUrl = '', fileName = '';
-  const fileInput = document.getElementById('gf-file');
-  if (fileInput && fileInput.files[0]) {
-    const statusEl = document.getElementById('gf-file-status');
-    if (statusEl) statusEl.textContent = 'Uploading file...';
-    const fd = new FormData();
-    fd.append('file', fileInput.files[0]);
-    fd.append('folder', 'scholarhub/marksheets');
-    try {
-      const up = await fetch('/api/upload/file', { method: 'POST', body: fd });
-      const uj = await up.json();
-      if (uj.ok) { fileUrl = uj.url; fileName = uj.name; }
-      if (statusEl) statusEl.textContent = uj.ok ? '✓ File uploaded' : 'File upload failed';
-    } catch(e) { if (statusEl) statusEl.textContent = 'File upload failed'; }
-  }
-  const r = await POST('/api/grades', { sid: parseInt(sid), sub, exam, max: parseInt(max), obt: parseInt(obt), fileUrl, fileName });
+  const r = await POST('/api/grades', { sid: parseInt(sid), sub, exam, max: parseInt(max), obt: parseInt(obt) });
   setLoading('gf-btn', false);
   if (!r.ok) { showAlert('gf-err', r.msg || 'Error saving grade.'); return; }
   flashMsg('gf-ok');
   document.getElementById('gf-max').value = '';
   document.getElementById('gf-obt').value = '';
   document.getElementById('gf-grd').value = '';
-  if (fileInput) fileInput.value = '';
-  const statusEl = document.getElementById('gf-file-status');
-  if (statusEl) statusEl.textContent = '';
   await refreshGradeTable();
 }
 async function delGrade(id) {
@@ -1284,31 +1488,13 @@ async function saveHW() {
   const due   = document.getElementById('hf-due').value;
   const pri   = document.getElementById('hf-pri').value;
   const desc  = document.getElementById('hf-desc').value.trim();
-  let fileUrl = '', fileName = '';
-  const fileInput = document.getElementById('hf-file');
-  if (fileInput && fileInput.files[0]) {
-    const statusEl = document.getElementById('hf-file-status');
-    if (statusEl) statusEl.textContent = 'Uploading file...';
-    const fd = new FormData();
-    fd.append('file', fileInput.files[0]);
-    fd.append('folder', 'scholarhub/homework');
-    try {
-      const up = await fetch('/api/upload/file', { method: 'POST', body: fd });
-      const uj = await up.json();
-      if (uj.ok) { fileUrl = uj.url; fileName = uj.name; }
-      if (statusEl) statusEl.textContent = uj.ok ? '✓ File uploaded' : 'File upload failed';
-    } catch(e) { }
-  }
-  const r = await POST('/api/homework', { title, sub, cls, due, pri, desc, fileUrl, fileName });
+  const r = await POST('/api/homework', { title, sub, cls, due, pri, desc });
   setLoading('hf-btn', false);
   if (!r.ok) { alert(r.msg || 'Error'); return; }
   flashMsg('hf-ok');
   document.getElementById('hf-title').value = '';
   document.getElementById('hf-desc').value = '';
   document.getElementById('hf-due').value = '';
-  if (fileInput) fileInput.value = '';
-  const statusEl = document.getElementById('hf-file-status');
-  if (statusEl) statusEl.textContent = '';
   await refreshHWTable();
 }
 async function delHW(id) { await DEL('/api/homework/' + id); refreshHWTable(); }
@@ -1376,8 +1562,7 @@ function sPage(name, el) {
   document.querySelectorAll('#screen-student .nav-item').forEach(l => l.classList.remove('active'));
   document.getElementById('sp-' + name).classList.add('active');
   el.classList.add('active');
-  ({ dash: loadStudentDash, grades: loadStudentGrades, att: loadStudentAtt,
-     hw: loadStudentHW, tt: loadStudentTT, notices: loadStudentNotices, profile: loadStudentProfile })[name]?.();
+  ({ dash: loadStudentDash, assignments: loadStudentAssignments, grades: loadStudentGrades, att: loadStudentAtt, hw: loadStudentHW, tt: loadStudentTT, notices: loadStudentNotices, profile: loadStudentProfile })[name]?.();
 }
 async function loadStudentDash() {
   const s = curStudent;
@@ -1398,11 +1583,7 @@ async function loadStudentDash() {
 async function loadStudentGrades() {
   const r = await GET('/api/grades');
   const gs = r.grades || [];
-  document.getElementById('sg-tbody').innerHTML = gs.map(g => {
-    const pct=Math.round(g.obt/g.max*100); const col=gradeColor(pct);
-    const fileCell = g.fileUrl ? \`<a href="\${g.fileUrl}" target="_blank" style="color:var(--sky);font-size:11.5px;font-weight:600;">📎 View</a>\` : '';
-    return \`<tr><td><strong>\${g.sub}</strong></td><td>\${g.exam}</td><td>\${g.max}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${g.obt}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${pct}%</td><td><span class="badge" style="background:\${col}1a;color:\${col};">\${gradeLabel(pct)}</span></td><td><span class="badge \${pct>=33?'b-green':'b-rose'}">\${pct>=33?'Pass':'Fail'}</span></td><td>\${fileCell}</td></tr>\`;
-  }).join('') || '<tr><td colspan="8" class="tbl-empty">No marks yet</td></tr>';
+  document.getElementById('sg-tbody').innerHTML = gs.map(g => { const pct=Math.round(g.obt/g.max*100); const col=gradeColor(pct); return \`<tr><td><strong>\${g.sub}</strong></td><td>\${g.exam}</td><td>\${g.max}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${g.obt}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${pct}%</td><td><span class="badge" style="background:\${col}1a;color:\${col};">\${gradeLabel(pct)}</span></td><td><span class="badge \${pct>=33?'b-green':'b-rose'}">\${pct>=33?'Pass':'Fail'}</span></td></tr>\`; }).join('') || '<tr><td colspan="7" class="tbl-empty">No marks yet</td></tr>';
 }
 async function loadStudentAtt() {
   const r = await GET('/api/attendance');
@@ -1412,51 +1593,7 @@ async function loadStudentAtt() {
 async function loadStudentHW() {
   const r = await GET('/api/homework');
   const hw = r.homework || [];
-  document.getElementById('s-hwlist').innerHTML = hw.length ? hw.map((h,i) => {
-    const pc=h.pri==='High'?'b-rose':h.pri==='Medium'?'b-amber':'b-green';
-    const dc=h.pri==='High'?'var(--rose)':h.pri==='Medium'?'var(--amber)':'var(--green)';
-    const alreadySubmitted = h.submissions && h.submissions.find(s => s.sid === curStudent.id);
-    const hwFile = h.fileUrl ? \`<a href="\${h.fileUrl}" target="_blank" style="color:var(--sky);font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:4px;">📎 Download Assignment</a>\` : '';
-    const submitSection = \`
-      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:8px;">Submit Your Work</div>
-        \${alreadySubmitted ? \`<div style="display:flex;align-items:center;gap:8px;"><span class="badge b-green">✓ Submitted</span><a href="\${alreadySubmitted.fileUrl}" target="_blank" style="color:var(--sky);font-size:11.5px;">View your submission</a></div>\` : ''}
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:\${alreadySubmitted?8:0}px;">
-          <input type="file" id="hw-file-\${h.id}" accept=".pdf,image/*" style="font-size:12px;color:var(--text2);background:var(--bg3);border:1px solid var(--border2);border-radius:7px;padding:6px 10px;flex:1;min-width:0;cursor:pointer;"/>
-          <button class="btn-save" style="padding:8px 14px;font-size:12px;white-space:nowrap;" onclick="submitHW(\${h.id})">Submit</button>
-        </div>
-        <div id="hw-submit-status-\${h.id}" style="font-size:11.5px;color:var(--text3);margin-top:4px;"></div>
-      </div>\`;
-    return \`<div class="card" style="animation:pageIn .3s ease \${i*0.05}s both;">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
-        <strong style="font-size:14px;color:var(--text);">\${h.title}</strong>
-        <span class="badge b-sky">\${h.sub}</span>
-        <span class="badge \${pc}">\${h.pri}</span>
-        <span style="margin-left:auto;font-size:11.5px;color:var(--text3);">Due: <strong style="color:\${dc};font-family:var(--mono);">\${h.due}</strong></span>
-      </div>
-      \${h.desc?'<div style="font-size:12.5px;color:var(--text2);margin-top:4px;margin-bottom:8px;">'+h.desc+'</div>':''}
-      \${hwFile}
-      \${submitSection}
-    </div>\`;
-  }).join('') : '<div class="card"><div class="tbl-empty">No homework posted for your class yet</div></div>';
-}
-
-async function submitHW(hwId) {
-  const fileInput = document.getElementById('hw-file-' + hwId);
-  const statusEl = document.getElementById('hw-submit-status-' + hwId);
-  if (!fileInput || !fileInput.files[0]) { if (statusEl) statusEl.textContent = 'Please select a file to submit.'; return; }
-  if (statusEl) statusEl.textContent = 'Uploading...';
-  const fd = new FormData();
-  fd.append('file', fileInput.files[0]);
-  fd.append('folder', 'scholarhub/submissions');
-  try {
-    const up = await fetch('/api/upload/file', { method: 'POST', body: fd });
-    const uj = await up.json();
-    if (!uj.ok) { if (statusEl) statusEl.textContent = 'Upload failed.'; return; }
-    const r = await POST('/api/homework/' + hwId + '/submit', { fileUrl: uj.url, fileName: uj.name });
-    if (r.ok) { if (statusEl) statusEl.textContent = '✓ Submitted successfully!'; await loadStudentHW(); }
-    else { if (statusEl) statusEl.textContent = r.msg || 'Submission failed.'; }
-  } catch(e) { if (statusEl) statusEl.textContent = 'Error: ' + e.message; }
+  document.getElementById('s-hwlist').innerHTML = hw.length ? hw.map((h,i) => { const pc=h.pri==='High'?'b-rose':h.pri==='Medium'?'b-amber':'b-green'; const dc=h.pri==='High'?'var(--rose)':h.pri==='Medium'?'var(--amber)':'var(--green)'; return \`<div class="card" style="animation:pageIn .3s ease \${i*0.05}s both;"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;"><strong style="font-size:14px;color:var(--text);">\${h.title}</strong><span class="badge b-sky">\${h.sub}</span><span class="badge \${pc}">\${h.pri}</span><span style="margin-left:auto;font-size:11.5px;color:var(--text3);">Due: <strong style="color:\${dc};font-family:var(--mono);">\${h.due}</strong></span></div>\${h.desc?\`<div style="font-size:12.5px;color:var(--text2);margin-top:4px;">\${h.desc}</div>\`:''}</div>\`; }).join('') : '<div class="card"><div class="tbl-empty">No homework posted for your class yet</div></div>';
 }
 async function loadStudentTT() {
   const r = await GET('/api/timetable');
@@ -1477,82 +1614,10 @@ async function loadStudentNotices() {
 }
 function loadStudentProfile() {
   const s = curStudent;
-  const av = document.getElementById('p-av');
-  if (av) {
-    if (s.photo) { av.innerHTML = \`<img src="\${s.photo}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" />\`; av.style.background = 'transparent'; }
-    else { av.textContent = s.name.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase(); av.style.background = 'rgba(255,255,255,.2)'; }
-  }
+  const ini = s.name.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase();
+  document.getElementById('p-av').textContent = ini;
   setText('p-name', s.name); setText('p-class-sec', s.cls + ' · Section ' + s.section);
   setText('p-roll', s.roll); setText('p-cls', s.cls); setText('p-sec', s.section); setText('p-user', s.username);
-}
-
-async function uploadStudentPhoto() {
-  const fileInput = document.getElementById('student-photo-input');
-  const statusEl = document.getElementById('student-photo-status');
-  if (!fileInput || !fileInput.files[0]) return;
-  if (statusEl) statusEl.textContent = 'Uploading...';
-  const fd = new FormData();
-  fd.append('photo', fileInput.files[0]);
-  try {
-    const up = await fetch('/api/upload/photo', { method: 'POST', body: fd });
-    const uj = await up.json();
-    if (uj.ok) {
-      curStudent.photo = uj.url;
-      if (statusEl) statusEl.textContent = '✓ Photo updated!';
-      loadStudentProfile();
-    } else { if (statusEl) statusEl.textContent = 'Upload failed.'; }
-  } catch(e) { if (statusEl) statusEl.textContent = 'Error uploading.'; }
-}
-
-// ── Admin Settings ─────────────────────────────────────────
-async function loadSettingsPage() {
-  const r = await GET('/api/me');
-  if (r.ok && r.role === 'admin') {
-    setText('current-admin-username', r.username || 'admin');
-    const preview = document.getElementById('admin-photo-preview');
-    if (preview && r.photo) { preview.innerHTML = \`<img src="\${r.photo}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" />\`; }
-    setAdminSidebarPhoto(r.photo, r.username);
-  }
-}
-
-async function uploadAdminPhoto() {
-  const fileInput = document.getElementById('admin-photo-input');
-  const statusEl = document.getElementById('admin-photo-status');
-  if (!fileInput || !fileInput.files[0]) return;
-  if (statusEl) statusEl.textContent = 'Uploading...';
-  const fd = new FormData();
-  fd.append('photo', fileInput.files[0]);
-  try {
-    const up = await fetch('/api/upload/photo', { method: 'POST', body: fd });
-    const uj = await up.json();
-    if (uj.ok) {
-      if (statusEl) statusEl.textContent = '✓ Photo updated!';
-      const preview = document.getElementById('admin-photo-preview');
-      if (preview) preview.innerHTML = \`<img src="\${uj.url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" />\`;
-      setAdminSidebarPhoto(uj.url, null);
-    } else { if (statusEl) statusEl.textContent = 'Upload failed.'; }
-  } catch(e) { if (statusEl) statusEl.textContent = 'Error uploading.'; }
-}
-
-async function saveAdminCreds() {
-  saveLabel('cred-btn'); setLoading('cred-btn', true);
-  const username = document.getElementById('new-admin-user').value.trim();
-  const password = document.getElementById('new-admin-pass').value;
-  const password2 = document.getElementById('new-admin-pass2').value;
-  const errEl = document.getElementById('cred-err');
-  errEl.style.display = 'none';
-  if (!username || !password) { errEl.textContent = 'Fill all fields.'; errEl.style.display = 'block'; setLoading('cred-btn', false); return; }
-  if (password.length < 6) { errEl.textContent = 'Password must be at least 6 characters.'; errEl.style.display = 'block'; setLoading('cred-btn', false); return; }
-  if (password !== password2) { errEl.textContent = 'Passwords do not match.'; errEl.style.display = 'block'; setLoading('cred-btn', false); return; }
-  const r = await POST('/api/admin/credentials', { username, password });
-  setLoading('cred-btn', false);
-  if (r.ok) {
-    flashMsg('cred-ok');
-    document.getElementById('new-admin-user').value = '';
-    document.getElementById('new-admin-pass').value = '';
-    document.getElementById('new-admin-pass2').value = '';
-    setTimeout(() => { doLogout(); }, 2000);
-  } else { errEl.textContent = r.msg || 'Error updating credentials.'; errEl.style.display = 'block'; }
 }
 
 // ── Subject dropdowns ──────────────────────────────────────
@@ -1579,10 +1644,255 @@ function gradeColor(pct) { if(pct>=75)return'var(--green)'; if(pct>=50)return'va
 function notCat(c) { return c==='Exam'?'b-rose':c==='Event'?'b-green':c==='Fee'?'b-amber':c==='Holiday'?'b-sky':'b-primary'; }
 
 // ── Boot ───────────────────────────────────────────────────
+
+// ── Teacher & Assignment JS ─────────────────────────────────
+let curTeacher = null;
+let selectedFiles = {};
+
+function switchRole(r, el) {
+  curRole = r;
+  document.querySelectorAll('#screen-login .role-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+}
+
+async function doTeacherRegister() {
+  saveLabel('tr-btn'); setLoading('tr-btn', true); hideAlert('tr-err'); hideAlert('tr-ok');
+  const r = await POST('/api/teacher/register', { name: document.getElementById('tr-name').value.trim(), subject: document.getElementById('tr-subject').value, username: document.getElementById('tr-user').value.trim(), password: document.getElementById('tr-pass').value });
+  setLoading('tr-btn', false);
+  if (!r.ok) { showAlert('tr-err', r.msg || 'Failed.'); return; }
+  showAlert('tr-ok', r.msg, 'ok');
+  ['tr-name','tr-user','tr-pass'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('tr-subject').value = '';
+}
+
+function handleFileSelect(inputId, previewGridId) {
+  const input = document.getElementById(inputId);
+  const grid = document.getElementById(previewGridId);
+  if (!input || !grid) return;
+  const files = Array.from(input.files);
+  selectedFiles[inputId] = files;
+  grid.innerHTML = '';
+  files.forEach((f, i) => {
+    const item = document.createElement('div');
+    item.style.cssText = 'position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1;animation:pageIn .3s ease ' + (i*0.05) + 's both;';
+    if (f.type.includes('pdf')) {
+      item.innerHTML = `<div style="width:100%;height:100%;background:var(--rose-pale);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--rose);font-size:10px;font-weight:700;min-height:80px;">📄<span style="word-break:break-all;padding:0 4px;text-align:center;">${f.name.slice(0,14)}</span></div><button onclick="removeFile('${inputId}','${previewGridId}',${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>`;
+    } else {
+      const url = URL.createObjectURL(f);
+      item.innerHTML = `<img src="${url}" style="width:100%;height:100%;object-fit:cover;" alt=""/><button onclick="removeFile('${inputId}','${previewGridId}',${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>`;
+    }
+    grid.appendChild(item);
+  });
+}
+function removeFile(inputId, previewGridId, idx) {
+  if (!selectedFiles[inputId]) return;
+  selectedFiles[inputId].splice(idx, 1);
+  const files = selectedFiles[inputId];
+  const grid = document.getElementById(previewGridId);
+  grid.innerHTML = '';
+  files.forEach((f, i) => {
+    const item = document.createElement('div');
+    item.style.cssText = 'position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1;';
+    if (f.type.includes('pdf')) {
+      item.innerHTML = `<div style="width:100%;height:100%;background:var(--rose-pale);display:flex;align-items:center;justify-content:center;color:var(--rose);font-size:10px;font-weight:700;min-height:80px;">📄 ${f.name.slice(0,12)}</div><button onclick="removeFile('${inputId}','${previewGridId}',${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>`;
+    } else {
+      const url = URL.createObjectURL(f);
+      item.innerHTML = `<img src="${url}" style="width:100%;height:100%;object-fit:cover;" alt=""/><button onclick="removeFile('${inputId}','${previewGridId}',${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>`;
+    }
+    grid.appendChild(item);
+  });
+}
+async function uploadMultipleFiles(inputId, folder) {
+  const files = selectedFiles[inputId] || [];
+  const results = [];
+  for (const f of files) {
+    const fd = new FormData(); fd.append('file', f); fd.append('folder', 'scholarhub/' + folder);
+    const r = await (await fetch('/api/upload/file', { method: 'POST', body: fd })).json();
+    if (r.ok) results.push({ url: r.url, name: r.name, type: f.type.includes('pdf') ? 'pdf' : 'image' });
+  }
+  return results;
+}
+async function uploadSingleFile(inputId, folder) {
+  const input = document.getElementById(inputId);
+  if (!input || !input.files[0]) return null;
+  const fd = new FormData(); fd.append('file', input.files[0]); fd.append('folder', 'scholarhub/' + folder);
+  const r = await (await fetch('/api/upload/file', { method: 'POST', body: fd })).json();
+  return r.ok ? { url: r.url, name: r.name } : null;
+}
+
+function renderAssignCard(a, showSubmit) {
+  const pb = a.priority==='High'?'b-rose':a.priority==='Medium'?'b-amber':'b-green';
+  const dc = a.priority==='High'?'var(--rose)':a.priority==='Medium'?'var(--amber)':'var(--green)';
+  const isTeacher = a.postedByRole === 'teacher';
+  const byBadge = isTeacher ? `<span style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.25);border-radius:20px;padding:3px 8px;font-size:10px;font-weight:700;">🎓 ${a.postedByName||'Teacher'}</span>` : `<span class="badge b-violet">👤 Admin</span>`;
+  const gallery = a.files && a.files.length ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-bottom:12px;">${a.files.map(f => f.type==='pdf' ? `<a href="${f.url}" target="_blank" style="border-radius:10px;overflow:hidden;aspect-ratio:1;background:var(--rose-pale);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--rose);font-size:11px;font-weight:700;text-decoration:none;transition:transform .2s;" onmouseover="this.style.transform='scale(1.04)'" onmouseout="this.style.transform=''">📄<span style="word-break:break-all;padding:0 6px;text-align:center;">${(f.name||'PDF').slice(0,14)}</span></a>` : `<img src="${f.url}" style="border-radius:10px;aspect-ratio:1;object-fit:cover;width:100%;cursor:pointer;transition:transform .2s;" onmouseover="this.style.transform='scale(1.04)'" onmouseout="this.style.transform=''" onclick="openLightbox('${f.url}')" alt="" loading="lazy"/>`).join('')}</div>` : '';
+  let submitHtml = '';
+  if (showSubmit && curStudent) {
+    const already = a.submissions && a.submissions.find(s => s.sid === curStudent.id);
+    submitHtml = already ? `<div style="display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid var(--border);"><span class="badge b-green">✓ Submitted</span><a href="${already.fileUrl}" target="_blank" style="color:var(--primary2);font-size:12px;">View</a></div>` : `<div style="padding-top:12px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><label class="upload-btn" style="font-size:12px;padding:6px 12px;">📎 Attach File<input type="file" id="sub-${a.id}" accept="image/*,.pdf" style="display:none;" onchange="previewFile('sub-${a.id}','subprev-${a.id}')"/></label><span id="subprev-${a.id}" style="font-size:11px;color:var(--text3);"></span><button class="btn-save" style="padding:6px 14px;font-size:12px;" onclick="submitAssignment(${a.id})">Submit</button></div>`;
+  }
+  return `<div class="card" style="transition:transform .2s,box-shadow .2s;animation:pageIn .35s cubic-bezier(.16,1,.3,1);" onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='var(--sh)'" onmouseout="this.style.transform='';this.style.boxShadow=''">
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:10px;flex-wrap:wrap;">
+      <div style="font-size:15px;font-weight:700;color:var(--text);flex:1;">${a.title}</div>
+      <span class="badge ${pb}">${a.priority}</span>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+      <span class="badge b-sky">${a.subject||'General'}</span>
+      <span class="badge b-primary">${a.cls||'All'}</span>
+      <span style="font-size:12px;color:${dc};font-family:var(--mono);font-weight:700;">Due: ${a.due||'—'}</span>
+    </div>
+    ${a.description ? '<div style="font-size:13px;color:var(--text2);line-height:1.7;margin-bottom:12px;">'+a.description+'</div>' : ''}
+    ${gallery}
+    <div style="display:flex;align-items:center;gap:10px;padding-top:10px;border-top:1px solid var(--border);flex-wrap:wrap;">
+      ${byBadge}
+      <span style="margin-left:auto;font-size:11px;color:var(--text3);">${a.createdAt?new Date(a.createdAt).toLocaleDateString():''}</span>
+    </div>
+    ${submitHtml}
+  </div>`;
+}
+
+async function saveAssignment(prefix) {
+  const titleEl = document.getElementById(prefix + '-title');
+  const title = titleEl?.value.trim();
+  if (!title) { alert('Please enter a title!'); return; }
+  saveLabel(prefix + '-btn'); setLoading(prefix + '-btn', true);
+  const btn = document.getElementById(prefix + '-btn');
+  btn.innerHTML = '<span class="spinner"></span>Uploading files...';
+  const files = await uploadMultipleFiles(prefix + '-files', 'assignments');
+  const data = { title, subject: document.getElementById(prefix + '-sub')?.value || '', cls: document.getElementById(prefix + '-class')?.value || 'All', due: document.getElementById(prefix + '-due')?.value || '', priority: document.getElementById(prefix + '-pri')?.value || 'Medium', description: document.getElementById(prefix + '-desc')?.value.trim() || '', files };
+  const r = await POST('/api/assignments', data);
+  setLoading(prefix + '-btn', false);
+  if (!r.ok) { alert(r.msg || 'Error'); return; }
+  flashMsg(prefix + '-ok');
+  document.getElementById(prefix + '-title').value = '';
+  document.getElementById(prefix + '-desc').value = '';
+  document.getElementById(prefix + '-due').value = '';
+  const grid = document.getElementById(prefix + '-preview-grid');
+  if (grid) grid.innerHTML = '';
+  selectedFiles[prefix + '-files'] = [];
+  if (prefix === 'asf') loadAssignmentsAdmin(); else loadTeacherAssignments();
+}
+
+async function submitAssignment(assignId) {
+  const input = document.getElementById('sub-' + assignId);
+  if (!input || !input.files[0]) { alert('Please select a file!'); return; }
+  const fd = new FormData(); fd.append('file', input.files[0]); fd.append('folder', 'scholarhub/submissions');
+  const uploadRes = await (await fetch('/api/upload/file', { method: 'POST', body: fd })).json();
+  if (!uploadRes.ok) { alert('Upload failed!'); return; }
+  const r = await POST('/api/assignments/' + assignId + '/submit', { fileUrl: uploadRes.url, fileName: uploadRes.name });
+  if (r.ok) loadStudentAssignments(); else alert(r.msg || 'Failed');
+}
+
+function openLightbox(url) { const lb = document.getElementById('lightbox'); if(!lb){const d=document.createElement('div');d.id='lightbox';d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer;animation:fadeIn .2s;';d.onclick=()=>d.remove();d.innerHTML='<img src="'+url+'" style="max-width:90vw;max-height:90vh;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.8);" /><span style="position:absolute;top:20px;right:24px;font-size:28px;color:white;cursor:pointer;">✕</span>';document.body.appendChild(d);}else{document.getElementById('lightbox-img').src=url;lb.classList.add('open');}}
+function closeLightbox() { const lb = document.getElementById('lightbox'); if(lb)lb.classList.remove('open'); }
+
+// Teacher API calls
+async function doLogin_teacher(username, password) {
+  const r = await POST('/api/teacher/login', { username, password });
+  return r;
+}
+
+// Patch doLogin to handle teacher
+const _origDoLogin = doLogin;
+
+// Teacher pages
+function tPage(name, el) {
+  document.querySelectorAll('#screen-teacher .page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('#screen-teacher .nav-item').forEach(l => l.classList.remove('active'));
+  document.getElementById('tp-' + name).classList.add('active'); el.classList.add('active');
+  ({ dash: loadTeacherDash, assignments: loadTeacherAssignments, grades: loadTeacherGrades, attendance: loadTeacherAtt, profile: loadTeacherProfile })[name]?.();
+}
+async function loadTeacherDash() {
+  const t = curTeacher;
+  setText('t-greet', 'Welcome, ' + t.name.split(' ')[0] + '! 👋');
+  setText('t-sub2', t.subject + ' Teacher');
+  setText('t-sname', t.name); setText('t-ssub', t.subject);
+  const ini = t.name.split(' ').map(n => n[0]).join('').slice(0,2).toUpperCase();
+  setText('t-av-sidebar', ini);
+  const [stR, asR, grR, atR] = await Promise.all([GET('/api/students'), GET('/api/assignments'), GET('/api/grades'), GET('/api/attendance')]);
+  setText('t-nst', (stR.students||[]).filter(s => s.approved).length);
+  setText('t-nas', (asR.assignments||[]).length);
+  setText('t-ngr', (grR.grades||[]).length);
+  setText('t-nat', (atR.attendance||[]).length);
+  const recent = (asR.assignments||[]).slice(-3).reverse();
+  document.getElementById('t-recent-assigns').innerHTML = recent.length ? recent.map(a => renderAssignCard(a, false)).join('') : '<div class="tbl-empty">No assignments yet</div>';
+}
+async function loadTeacherAssignments() {
+  populateAllSubs('tasf-sub');
+  const r = await GET('/api/assignments');
+  document.getElementById('t-assignments-list').innerHTML = (r.assignments||[]).map(a => renderAssignCard(a, false)).join('') || '<div class="card"><div class="tbl-empty">No assignments yet</div></div>';
+}
+async function loadTeacherGrades() {
+  const r = await GET('/api/students'); allStudents = (r.students||[]).filter(s => s.approved);
+  document.getElementById('tgf-st').innerHTML = '<option value="">Select student</option>' + allStudents.map(s => `<option value="${s.id}">${s.name} (${s.cls}-${s.section})</option>`).join('');
+  updateSubjects('tgf-sub', 'tgf-st');
+  const gr = await GET('/api/grades');
+  document.getElementById('tgrd-tbody').innerHTML = (gr.grades||[]).map(g => { const st = allStudents.find(s => s.id === g.sid), pct = Math.round(g.obt/g.max*100), col = gradeColor(pct); return `<tr><td><strong>${st?st.name:'Unknown'}</strong></td><td><span class="badge b-primary">${st?st.cls:'—'}</span></td><td>${g.sub}</td><td>${g.exam}</td><td>${g.max}</td><td style="font-family:var(--mono);font-weight:700;color:${col};">${g.obt}</td><td style="font-family:var(--mono);font-weight:700;color:${col};">${pct}%</td><td><span class="badge" style="background:${col}1a;color:${col};">${gradeLabel(pct)}</span></td><td>${fileLink(g.fileUrl,g.fileName)}</td></tr>`; }).join('') || '<tr><td colspan="9" class="tbl-empty">No records</td></tr>';
+}
+async function saveGradeTeacher() {
+  saveLabel('tgf-btn'); setLoading('tgf-btn', true);
+  document.getElementById('tgf-btn').innerHTML = '<span class="spinner"></span>Uploading...';
+  const uploaded = await uploadSingleFile('tgf-file', 'marksheets');
+  const r = await POST('/api/grades', { sid: parseInt(document.getElementById('tgf-st').value), sub: document.getElementById('tgf-sub').value, exam: document.getElementById('tgf-exam').value, max: parseInt(document.getElementById('tgf-max').value), obt: parseInt(document.getElementById('tgf-obt').value), fileUrl: uploaded?.url||'', fileName: uploaded?.name||'' });
+  setLoading('tgf-btn', false);
+  if (!r.ok) { showAlert('tgf-err', r.msg||'Error'); return; }
+  flashMsg('tgf-ok');
+  ['tgf-max','tgf-obt','tgf-grd'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('tgf-file').value=''; document.getElementById('tgf-file-preview').textContent='';
+  await loadTeacherGrades();
+}
+function calcGradeT(){const max=parseInt(document.getElementById('tgf-max').value)||0,obt=parseInt(document.getElementById('tgf-obt').value)||0;document.getElementById('tgf-grd').value=max>0?gradeLabel(Math.round(obt/max*100)):'';}
+
+async function loadTeacherAtt() {
+  const r = await GET('/api/students'); allStudents = (r.students||[]).filter(s => s.approved);
+  document.getElementById('taf-st').innerHTML = '<option value="">Select</option>' + allStudents.map(s => `<option value="${s.id}">${s.name} (${s.cls}-${s.section})</option>`).join('');
+  updateSubjects('taf-sub', 'taf-st');
+  const at = await GET('/api/attendance');
+  document.getElementById('tatt-tbody').innerHTML = (at.attendance||[]).map(a => { const st=allStudents.find(s=>s.id===a.sid),pct=Math.round(a.pre/a.tot*100),col=pct>=75?'var(--green)':pct>=50?'var(--amber)':'var(--rose)'; return `<tr><td><strong>${st?st.name:'Unknown'}</strong></td><td><span class="badge b-primary">${st?st.cls:'—'}</span></td><td>${a.sub}</td><td>${a.tot}</td><td>${a.pre}</td><td style="font-family:var(--mono);font-weight:700;color:${col};">${pct}%</td><td><span class="badge ${pct>=75?'b-green':pct>=50?'b-amber':'b-rose'}">${pct>=75?'Good':pct>=50?'Average':'Warning'}</span></td></tr>`; }).join('') || '<tr><td colspan="7" class="tbl-empty">No records</td></tr>';
+}
+async function saveAttTeacher() {
+  saveLabel('taf-btn'); setLoading('taf-btn', true);
+  const r = await POST('/api/attendance', { sid: parseInt(document.getElementById('taf-st').value), sub: document.getElementById('taf-sub').value, tot: parseInt(document.getElementById('taf-tot').value), pre: parseInt(document.getElementById('taf-pre').value) });
+  setLoading('taf-btn', false); if (!r.ok) { alert(r.msg||'Error'); return; }
+  flashMsg('taf-ok'); document.getElementById('taf-tot').value=''; document.getElementById('taf-pre').value='';
+  await loadTeacherAtt();
+}
+function loadTeacherProfile() {
+  const t = curTeacher, ini = t.name.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase();
+  setText('tp-av-text', ini); setText('tp-name', t.name); setText('tp-subject', t.subject + ' Teacher'); setText('tp-user', t.username);
+}
+
+// Admin teacher management
+async function loadTeachersPage() {
+  const r = await GET('/api/teachers');
+  const teachers = r.teachers || [];
+  const pend = teachers.filter(t => !t.approved), appr = teachers.filter(t => t.approved);
+  setText('tpend-pill', pend.length); updateTPendBadge(pend.length);
+  document.getElementById('tpend-tbody').innerHTML = pend.map(t => `<tr><td><strong>${t.name}</strong></td><td><span style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.25);border-radius:20px;padding:2px 8px;font-size:10.5px;font-weight:700;">${t.subject}</span></td><td style="font-family:var(--mono);font-size:12px;">${t.username}</td><td style="font-size:11px;color:var(--text3);">${t.createdAt?new Date(t.createdAt).toLocaleDateString():''}</td><td><button class="btn-approve" onclick="approveTeacher(${t.id})">Approve</button></td></tr>`).join('') || '<tr><td colspan="5" class="tbl-empty">No pending teachers</td></tr>';
+  document.getElementById('tappr-tbody').innerHTML = appr.map(t => `<tr><td><strong>${t.name}</strong></td><td><span style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.25);border-radius:20px;padding:2px 8px;font-size:10.5px;font-weight:700;">${t.subject}</span></td><td style="font-family:var(--mono);font-size:12px;">${t.username}</td><td style="font-size:11px;color:var(--text3);">${t.createdAt?new Date(t.createdAt).toLocaleDateString():''}</td><td><button class="btn-del" onclick="deleteTeacher(${t.id})">Remove</button></td></tr>`).join('') || '<tr><td colspan="5" class="tbl-empty">No approved teachers</td></tr>';
+}
+async function approveTeacher(id){await POST('/api/teachers/'+id+'/approve');loadTeachersPage();loadAdminOverview();}
+async function deleteTeacher(id){if(!confirm('Remove teacher?'))return;await DEL('/api/teachers/'+id);loadTeachersPage();}
+function updateTPendBadge(n){const b=document.getElementById('nb-tpend');if(!b)return;b.style.display=n>0?'inline':'none';b.textContent=n;}
+
+async function loadAssignmentsAdmin() {
+  populateAllSubs('asf-sub');
+  const r = await GET('/api/assignments');
+  document.getElementById('assignments-list-admin').innerHTML = (r.assignments||[]).map(a => renderAssignCard(a, false)).join('') || '<div class="card"><div class="tbl-empty">No assignments yet</div></div>';
+}
+
+async function loadStudentAssignments() {
+  const r = await GET('/api/assignments');
+  document.getElementById('s-assignments-list').innerHTML = (r.assignments||[]).map(a => renderAssignCard(a, true)).join('') || '<div class="card"><div class="tbl-empty">No assignments yet</div></div>';
+}
+
+function previewSingleFile(inputId, previewId) { const f = document.getElementById(inputId)?.files[0]; if(f) document.getElementById(previewId).textContent = '📎 ' + f.name; }
+
 checkSession();
 </script>
 </body>
 </html>`;
+
 
 // ── HTTP Server ───────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
