@@ -1677,10 +1677,10 @@ function handleFileSelect(inputId, previewGridId) {
     const item = document.createElement('div');
     item.style.cssText = 'position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1;animation:pageIn .3s ease ' + (i*0.05) + 's both;';
     if (f.type.includes('pdf')) {
-      item.innerHTML = \`<div style="width:100%;height:100%;background:var(--rose-pale);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--rose);font-size:10px;font-weight:700;min-height:80px;">📄<span style="word-break:break-all;padding:0 4px;text-align:center;">${f.name.slice(0,14)}</span></div><button onclick="removeFile('${inputId}','${previewGridId}',${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>\`;
+      item.innerHTML = \`<div style="width:100%;height:100%;background:var(--rose-pale);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--rose);font-size:10px;font-weight:700;min-height:80px;">📄<span style="word-break:break-all;padding:0 4px;text-align:center;">\${f.name.slice(0,14)}</span></div><button onclick="removeFile('\${inputId}','\${previewGridId}',\${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>\`;
     } else {
       const url = URL.createObjectURL(f);
-      item.innerHTML = \`<img src="${url}" style="width:100%;height:100%;object-fit:cover;" alt=""/><button onclick="removeFile('${inputId}','${previewGridId}',${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>\`;
+      item.innerHTML = \`<img src="\${url}" style="width:100%;height:100%;object-fit:cover;" alt=""/><button onclick="removeFile('\${inputId}','\${previewGridId}',\${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>\`;
     }
     grid.appendChild(item);
   });
@@ -1695,10 +1695,10 @@ function removeFile(inputId, previewGridId, idx) {
     const item = document.createElement('div');
     item.style.cssText = 'position:relative;border-radius:10px;overflow:hidden;aspect-ratio:1;';
     if (f.type.includes('pdf')) {
-      item.innerHTML = \`<div style="width:100%;height:100%;background:var(--rose-pale);display:flex;align-items:center;justify-content:center;color:var(--rose);font-size:10px;font-weight:700;min-height:80px;">📄 ${f.name.slice(0,12)}</div><button onclick="removeFile('${inputId}','${previewGridId}',${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>\`;
+      item.innerHTML = \`<div style="width:100%;height:100%;background:var(--rose-pale);display:flex;align-items:center;justify-content:center;color:var(--rose);font-size:10px;font-weight:700;min-height:80px;">📄 \${f.name.slice(0,12)}</div><button onclick="removeFile('\${inputId}','\${previewGridId}',\${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>\`;
     } else {
       const url = URL.createObjectURL(f);
-      item.innerHTML = \`<img src="${url}" style="width:100%;height:100%;object-fit:cover;" alt=""/><button onclick="removeFile('${inputId}','${previewGridId}',${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>\`;
+      item.innerHTML = \`<img src="\${url}" style="width:100%;height:100%;object-fit:cover;" alt=""/><button onclick="removeFile('\${inputId}','\${previewGridId}',\${i})" style="position:absolute;top:4px;right:4px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.7);color:white;border:none;cursor:pointer;font-size:10px;">✕</button>\`;
     }
     grid.appendChild(item);
   });
@@ -1722,30 +1722,30 @@ async function uploadSingleFile(inputId, folder) {
 }
 
 function renderAssignCard(a, showSubmit) {
-  const pb = a.priority==='High'?'b-rose':a.priority==='Medium'?'b-amber':'b-green';
-  const dc = a.priority==='High'?'var(--rose)':a.priority==='Medium'?'var(--amber)':'var(--green)';
-  const isTeacher = a.postedByRole === 'teacher';
-  const byBadge = isTeacher
-    ? '<span style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.25);border-radius:20px;padding:3px 8px;font-size:10px;font-weight:700;">\u{1F393} ' + (a.postedByName||'Teacher') + '</span>'
-    : '<span class="badge b-violet">\u{1F464} Admin</span>';
-  let gallery = '';
+  var pb = a.priority==='High'?'b-rose':a.priority==='Medium'?'b-amber':'b-green';
+  var dc = a.priority==='High'?'var(--rose)':a.priority==='Medium'?'var(--amber)':'var(--green)';
+  var isTeacher = a.postedByRole === 'teacher';
+  var byBadge = isTeacher
+    ? '<span style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.25);border-radius:20px;padding:3px 8px;font-size:10px;font-weight:700;">&#127891; ' + (a.postedByName||'Teacher') + '</span>'
+    : '<span class="badge b-violet">&#128100; Admin</span>';
+  var gallery = '';
   if (a.files && a.files.length) {
-    const items = a.files.map(function(f) {
-      if (f.type==='pdf') {
-        return '<a href="' + f.url + '" target="_blank" style="border-radius:10px;overflow:hidden;aspect-ratio:1;background:var(--rose-pale);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--rose);font-size:11px;font-weight:700;text-decoration:none;transition:transform .2s;" onmouseover="this.style.transform=\'scale(1.04)\'" onmouseout="this.style.transform=\'\'">\u{1F4C4}<span style="word-break:break-all;padding:0 6px;text-align:center;">' + (f.name||'PDF').slice(0,14) + '</span></a>';
+    var gitems = a.files.map(function(f) {
+      if (f.type === 'pdf') {
+        return '<a href="' + f.url + '" target="_blank" style="border-radius:10px;overflow:hidden;aspect-ratio:1;background:var(--rose-pale);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:var(--rose);font-size:11px;font-weight:700;text-decoration:none;transition:transform .2s;" onmouseover="this.style.transform=\'scale(1.04)\'" onmouseout="this.style.transform=\'\'">&#128196;<span style="word-break:break-all;padding:0 6px;text-align:center;">' + (f.name||'PDF').slice(0,14) + '</span></a>';
       } else {
-        return '<img src="' + f.url + '" style="border-radius:10px;aspect-ratio:1;object-fit:cover;width:100%;cursor:pointer;transition:transform .2s;" onmouseover="this.style.transform=\'scale(1.04)\'" onmouseout="this.style.transform=\'\'" onclick="openLightbox(\'' + f.url + '\')" alt="" loading="lazy"/>';
+        return '<img src="' + f.url + '" style="border-radius:10px;aspect-ratio:1;object-fit:cover;width:100%;cursor:pointer;transition:transform .2s;" onmouseover="this.style.transform=\'scale(1.04)\'" onmouseout="this.style.transform=\'\'" onclick="openLightbox(\''+f.url+'\')" alt="" loading="lazy"/>';
       }
     }).join('');
-    gallery = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-bottom:12px;">' + items + '</div>';
+    gallery = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-bottom:12px;">' + gitems + '</div>';
   }
-  let submitHtml = '';
+  var submitHtml = '';
   if (showSubmit && curStudent) {
-    const already = a.submissions && a.submissions.find(function(s){ return s.sid === curStudent.id; });
+    var already = a.submissions && a.submissions.find(function(s){ return s.sid === curStudent.id; });
     if (already) {
-      submitHtml = '<div style="display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid var(--border);"><span class="badge b-green">\u2713 Submitted</span><a href="' + already.fileUrl + '" target="_blank" style="color:var(--primary2);font-size:12px;">View</a></div>';
+      submitHtml = '<div style="display:flex;align-items:center;gap:8px;padding-top:12px;border-top:1px solid var(--border);"><span class="badge b-green">&#10003; Submitted</span><a href="' + already.fileUrl + '" target="_blank" style="color:var(--primary2);font-size:12px;">View</a></div>';
     } else {
-      submitHtml = '<div style="padding-top:12px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><label class="upload-btn" style="font-size:12px;padding:6px 12px;">\u{1F4CE} Attach File<input type="file" id="sub-' + a.id + '" accept="image/*,.pdf" style="display:none;" onchange="previewFile(\'sub-' + a.id + '\',\'subprev-' + a.id + '\')"/></label><span id="subprev-' + a.id + '" style="font-size:11px;color:var(--text3);"></span><button class="btn-save" style="padding:6px 14px;font-size:12px;" onclick="submitAssignment(' + a.id + ')">Submit</button></div>';
+      submitHtml = '<div style="padding-top:12px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:center;flex-wrap:wrap;"><label class="upload-btn" style="font-size:12px;padding:6px 12px;">&#128206; Attach File<input type="file" id="sub-' + a.id + '" accept="image/*,.pdf" style="display:none;" onchange="previewFile(\'sub-' + a.id + '\',\'subprev-' + a.id + '\')"/></label><span id="subprev-' + a.id + '" style="font-size:11px;color:var(--text3);"></span><button class="btn-save" style="padding:6px 14px;font-size:12px;" onclick="submitAssignment(' + a.id + ')">Submit</button></div>';
     }
   }
   return '<div class="card" style="transition:transform .2s,box-shadow .2s;animation:pageIn .35s cubic-bezier(.16,1,.3,1);" onmouseover="this.style.transform=\'translateY(-2px)\';this.style.boxShadow=\'var(--sh)\'" onmouseout="this.style.transform=\'\';this.style.boxShadow=\'\'">' +
@@ -1756,19 +1756,18 @@ function renderAssignCard(a, showSubmit) {
     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">' +
     '<span class="badge b-sky">' + (a.subject||'General') + '</span>' +
     '<span class="badge b-primary">' + (a.cls||'All') + '</span>' +
-    '<span style="font-size:12px;color:' + dc + ';font-family:var(--mono);font-weight:700;">Due: ' + (a.due||'\u2014') + '</span>' +
+    '<span style="font-size:12px;color:' + dc + ';font-family:var(--mono);font-weight:700;">Due: ' + (a.due||'&mdash;') + '</span>' +
     '</div>' +
     (a.description ? '<div style="font-size:13px;color:var(--text2);line-height:1.7;margin-bottom:12px;">' + a.description + '</div>' : '') +
     gallery +
     '<div style="display:flex;align-items:center;gap:10px;padding-top:10px;border-top:1px solid var(--border);flex-wrap:wrap;">' +
     byBadge +
-    '<span style="margin-left:auto;font-size:11px;color:var(--text3);">' + (a.createdAt?new Date(a.createdAt).toLocaleDateString():'') + '</span>' +
-    (a.files&&a.files.length ? '<span class="badge b-sky">' + a.files.length + ' file' + (a.files.length>1?'s':'') + '</span>' : '') +
+    '<span style="margin-left:auto;font-size:11px;color:var(--text3);">' + (a.createdAt ? new Date(a.createdAt).toLocaleDateString() : '') + '</span>' +
+    (a.files && a.files.length ? '<span class="badge b-sky">' + a.files.length + ' file' + (a.files.length > 1 ? 's' : '') + '</span>' : '') +
     '</div>' +
     submitHtml +
-  '</div>';
+    '</div>';
 }
-
 async function saveAssignment(prefix) {
   const titleEl = document.getElementById(prefix + '-title');
   const title = titleEl?.value.trim();
@@ -1842,10 +1841,10 @@ async function loadTeacherAssignments() {
 }
 async function loadTeacherGrades() {
   const r = await GET('/api/students'); allStudents = (r.students||[]).filter(s => s.approved);
-  document.getElementById('tgf-st').innerHTML = '<option value="">Select student</option>' + allStudents.map(s => \`<option value="${s.id}">${s.name} (${s.cls}-${s.section})</option>\`).join('');
+  document.getElementById('tgf-st').innerHTML = '<option value="">Select student</option>' + allStudents.map(s => \`<option value="\${s.id}">\${s.name} (\${s.cls}-\${s.section})</option>\`).join('');
   updateSubjects('tgf-sub', 'tgf-st');
   const gr = await GET('/api/grades');
-  document.getElementById('tgrd-tbody').innerHTML = (gr.grades||[]).map(g => { const st = allStudents.find(s => s.id === g.sid), pct = Math.round(g.obt/g.max*100), col = gradeColor(pct); return \`<tr><td><strong>${st?st.name:'Unknown'}</strong></td><td><span class="badge b-primary">${st?st.cls:'—'}</span></td><td>${g.sub}</td><td>${g.exam}</td><td>${g.max}</td><td style="font-family:var(--mono);font-weight:700;color:${col};">${g.obt}</td><td style="font-family:var(--mono);font-weight:700;color:${col};">${pct}%</td><td><span class="badge" style="background:${col}1a;color:${col};">${gradeLabel(pct)}</span></td><td>${fileLink(g.fileUrl,g.fileName)}</td></tr>\`; }).join('') || '<tr><td colspan="9" class="tbl-empty">No records</td></tr>';
+  document.getElementById('tgrd-tbody').innerHTML = (gr.grades||[]).map(g => { const st = allStudents.find(s => s.id === g.sid), pct = Math.round(g.obt/g.max*100), col = gradeColor(pct); return \`<tr><td><strong>\${st?st.name:'Unknown'}</strong></td><td><span class="badge b-primary">\${st?st.cls:'\u2014'}</span></td><td>\${g.sub}</td><td>\${g.exam}</td><td>\${g.max}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${g.obt}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${pct}%</td><td><span class="badge" style="background:\${col}1a;color:\${col};">\${gradeLabel(pct)}</span></td><td>\${fileLink(g.fileUrl,g.fileName)}</td></tr>\`; }).join('') || '<tr><td colspan="9" class="tbl-empty">No records</td></tr>';
 }
 async function saveGradeTeacher() {
   saveLabel('tgf-btn'); setLoading('tgf-btn', true);
@@ -1863,10 +1862,10 @@ function calcGradeT(){const max=parseInt(document.getElementById('tgf-max').valu
 
 async function loadTeacherAtt() {
   const r = await GET('/api/students'); allStudents = (r.students||[]).filter(s => s.approved);
-  document.getElementById('taf-st').innerHTML = '<option value="">Select</option>' + allStudents.map(s => \`<option value="${s.id}">${s.name} (${s.cls}-${s.section})</option>\`).join('');
+  document.getElementById('taf-st').innerHTML = '<option value="">Select</option>' + allStudents.map(s => \`<option value="\${s.id}">\${s.name} (\${s.cls}-\${s.section})</option>\`).join('');
   updateSubjects('taf-sub', 'taf-st');
   const at = await GET('/api/attendance');
-  document.getElementById('tatt-tbody').innerHTML = (at.attendance||[]).map(a => { const st=allStudents.find(s=>s.id===a.sid),pct=Math.round(a.pre/a.tot*100),col=pct>=75?'var(--green)':pct>=50?'var(--amber)':'var(--rose)'; return \`<tr><td><strong>${st?st.name:'Unknown'}</strong></td><td><span class="badge b-primary">${st?st.cls:'—'}</span></td><td>${a.sub}</td><td>${a.tot}</td><td>${a.pre}</td><td style="font-family:var(--mono);font-weight:700;color:${col};">${pct}%</td><td><span class="badge ${pct>=75?'b-green':pct>=50?'b-amber':'b-rose'}">${pct>=75?'Good':pct>=50?'Average':'Warning'}</span></td></tr>\`; }).join('') || '<tr><td colspan="7" class="tbl-empty">No records</td></tr>';
+  document.getElementById('tatt-tbody').innerHTML = (at.attendance||[]).map(a => { const st=allStudents.find(s=>s.id===a.sid),pct=Math.round(a.pre/a.tot*100),col=pct>=75?'var(--green)':pct>=50?'var(--amber)':'var(--rose)'; return \`<tr><td><strong>\${st?st.name:'Unknown'}</strong></td><td><span class="badge b-primary">\${st?st.cls:'\u2014'}</span></td><td>\${a.sub}</td><td>\${a.tot}</td><td>\${a.pre}</td><td style="font-family:var(--mono);font-weight:700;color:\${col};">\${pct}%</td><td><span class="badge \${pct>=75?'b-green':pct>=50?'b-amber':'b-rose'}">\${pct>=75?'Good':pct>=50?'Average':'Warning'}</span></td></tr>\`; }).join('') || '<tr><td colspan="7" class="tbl-empty">No records</td></tr>';
 }
 async function saveAttTeacher() {
   saveLabel('taf-btn'); setLoading('taf-btn', true);
@@ -1886,8 +1885,8 @@ async function loadTeachersPage() {
   const teachers = r.teachers || [];
   const pend = teachers.filter(t => !t.approved), appr = teachers.filter(t => t.approved);
   setText('tpend-pill', pend.length); updateTPendBadge(pend.length);
-  document.getElementById('tpend-tbody').innerHTML = pend.map(t => \`<tr><td><strong>${t.name}</strong></td><td><span style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.25);border-radius:20px;padding:2px 8px;font-size:10.5px;font-weight:700;">${t.subject}</span></td><td style="font-family:var(--mono);font-size:12px;">${t.username}</td><td style="font-size:11px;color:var(--text3);">${t.createdAt?new Date(t.createdAt).toLocaleDateString():''}</td><td><button class="btn-approve" onclick="approveTeacher(${t.id})">Approve</button></td></tr>\`).join('') || '<tr><td colspan="5" class="tbl-empty">No pending teachers</td></tr>';
-  document.getElementById('tappr-tbody').innerHTML = appr.map(t => \`<tr><td><strong>${t.name}</strong></td><td><span style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.25);border-radius:20px;padding:2px 8px;font-size:10.5px;font-weight:700;">${t.subject}</span></td><td style="font-family:var(--mono);font-size:12px;">${t.username}</td><td style="font-size:11px;color:var(--text3);">${t.createdAt?new Date(t.createdAt).toLocaleDateString():''}</td><td><button class="btn-del" onclick="deleteTeacher(${t.id})">Remove</button></td></tr>\`).join('') || '<tr><td colspan="5" class="tbl-empty">No approved teachers</td></tr>';
+  document.getElementById('tpend-tbody').innerHTML = pend.map(t => \`<tr><td><strong>\${t.name}</strong></td><td><span style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.25);border-radius:20px;padding:2px 8px;font-size:10.5px;font-weight:700;">\${t.subject}</span></td><td style="font-family:var(--mono);font-size:12px;">\${t.username}</td><td style="font-size:11px;color:var(--text3);">\${t.createdAt?new Date(t.createdAt).toLocaleDateString():''}</td><td><button class="btn-approve" onclick="approveTeacher(\${t.id})">Approve</button></td></tr>\`).join('') || '<tr><td colspan="5" class="tbl-empty">No pending teachers</td></tr>';
+  document.getElementById('tappr-tbody').innerHTML = appr.map(t => \`<tr><td><strong>\${t.name}</strong></td><td><span style="background:rgba(45,212,191,.12);color:#2dd4bf;border:1px solid rgba(45,212,191,.25);border-radius:20px;padding:2px 8px;font-size:10.5px;font-weight:700;">\${t.subject}</span></td><td style="font-family:var(--mono);font-size:12px;">\${t.username}</td><td style="font-size:11px;color:var(--text3);">\${t.createdAt?new Date(t.createdAt).toLocaleDateString():''}</td><td><button class="btn-del" onclick="deleteTeacher(\${t.id})">Remove</button></td></tr>\`).join('') || '<tr><td colspan="5" class="tbl-empty">No approved teachers</td></tr>';
 }
 async function approveTeacher(id){await POST('/api/teachers/'+id+'/approve');loadTeachersPage();loadAdminOverview();}
 async function deleteTeacher(id){if(!confirm('Remove teacher?'))return;await DEL('/api/teachers/'+id);loadTeachersPage();}
