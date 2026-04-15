@@ -1,16 +1,12 @@
 {
-  "name": "scholarhub-mis",
-  "version": "2.0.0",
-  "description": "School Management Information System with Fees, Library, Teachers, and ID Cards",
+  "name": "scholarhub",
+  "version": "1.0.0",
+  "description": "School Management System",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": [
-    "school",
-    "management",
-    "mis"
-  ],
-  "author": "YourName",
-  "license": "ISC"
+  "dependencies": {
+    "mongodb": "^6.3.0"
+  }
 }
