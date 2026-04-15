@@ -1,0 +1,16 @@
+{
+  "name": "scholarhub",
+  "version": "1.0.0",
+  "description": "ScholarHub School Management System",
+  "main": "server.js",
+  "dependencies": {
+    "mongodb": "^6.0.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "build": "echo 'No build step required'"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
