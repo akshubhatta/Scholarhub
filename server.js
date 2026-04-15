@@ -7,7 +7,7 @@ const { MongoClient, ObjectId } = require('mongodb');
 // ── Config ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 // We will set MONGO_URL in the Render Environment Variables
-const MONGO_URL = process.env.MONGO_URL; 
+const MONGO_URL = 'mongodb+srv://Schooladmin:MyPass123@cluster0.evl6bsz.mongodb.net/scholarhub_db?retryWrites=true&w=majority&appName=Cluster0'; 
 const SESSION_SECRET = process.env.SESSION_SECRET || 'super_secret_key_123';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
