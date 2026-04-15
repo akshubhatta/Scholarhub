@@ -15,7 +15,7 @@ const ADMIN_PASSWORD = 'admin123';
 
 // === PASTE YOUR RENDER MONGODB CONNECTION STRING HERE ===
 // It usually looks like: mongodb+srv://user:password@cluster0.mongodb.net/dbname
-const MONGO_URL      = mongodb+srv://Schooladmin:school1234>@cluster0.evl6bsz.mongodb.net/?appName=Cluster0
+const MONGO_URL      = mongodb+srv://Schooladmin:school1234@cluster0.evl6bsz.mongodb.net/?appName=Cluster0
 // ========================================================
 
 const DB_NAME        = 'scholarhub_db'; // You can name this whatever you want
